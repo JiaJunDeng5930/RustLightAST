@@ -103,6 +103,27 @@ pub struct FunctionDef {
     pub attrs: Vec<Attribute>,
 }
 
+impl FunctionDef {
+    /// Clone the signature with an empty body for use as a declaration.
+    pub fn signature_only(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            params: self.params.clone(),
+            return_type: self.return_type.clone(),
+            generics: self.generics.clone(),
+            body: Block {
+                stmts: Vec::new(),
+                expr: None,
+            },
+            asyncness: self.asyncness,
+            qualifiers: self.qualifiers.clone(),
+            vis: self.vis.clone(),
+            docs: Vec::new(),
+            attrs: self.attrs.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FunctionQualifiers {
     pub constness: bool,

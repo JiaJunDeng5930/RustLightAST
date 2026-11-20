@@ -1,6 +1,6 @@
 mod support;
 
-use rustlightast::rustlight_parser::parse_rust_source;
+use rustlightast::rustlight_parser::{parse_rust_source, ParsedSourceFile};
 use rustlightast::{
     DataAttribute, Expr, Fields, GenericArgument, GenericParam, Item, Literal, PathType, Pattern,
     RustCodeGenerator, RustModule, Statement, Type, TypeAlias, TypeParameter, Visibility,

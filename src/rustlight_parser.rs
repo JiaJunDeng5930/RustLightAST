@@ -5,6 +5,11 @@
 /// Parse and conversion errors returned by the public entry points.
 pub use syn::Error as ParseError;
 
+mod declaration_view;
+pub use declaration_view::parse_file_declaration_view;
+
+mod parsed_source;
+pub use parsed_source::ParsedSourceFile;
 
 
 mod source_file;
