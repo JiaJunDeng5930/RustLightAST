@@ -2,8 +2,8 @@ mod support;
 
 use quote::ToTokens;
 use rustlightast::{
-    Block, Expr, Literal, Member, Pattern, RangeEnd, RecordField, RecordPath, RustCodeGenerator,
-    Type,
+    Block, CallableTraitQualifier, CallableTraitType, ClosureParam, Expr, Literal, Member, Pattern,
+    RangeEnd, RecordField, RecordPath, RustCodeGenerator, Statement, Type,
 };
 
 fn name(name: &str) -> Box<Expr> {
@@ -60,6 +60,10 @@ fn preserves_operator_grouping_without_explicit_parentheses() {
     );
     check_shape(&range(range(name("a"), name("b")), name("c")), "(a..b)..c");
     check_shape(&unary("-", binary(name("a"), "+", name("b"))), "-(a + b)");
+    check_shape(
+        &Expr::Reference(binary(name("n"), "+", name("one")), true, false),
+        "&(n + one)",
+    );
     check_shape(
         &Expr::Cast(binary(name("a"), "+", name("b")), Type::Named("i64".into())),
         "((a + b) as i64)",
@@ -182,7 +186,7 @@ fn groups_struct_literals_exposed_in_control_flow_heads() {
     );
     check_shape(
         &Expr::IfLet {
-            pattern: "S { n: 1 }".into(),
+            pattern: support::parse_pattern("S { n: 1 }").unwrap(),
             value: record(),
             then_branch: empty(),
             else_branch: None,
@@ -210,7 +214,7 @@ fn groups_struct_literals_exposed_in_control_flow_heads() {
 fn keeps_lazy_boolean_operators_inside_let_scrutinees() {
     check_shape(
         &Expr::IfLet {
-            pattern: "false".into(),
+            pattern: Pattern::Literal(Literal::Bool(false)),
             value: binary(name("a"), "&&", name("b")),
             then_branch: Block {
                 stmts: vec![],
@@ -219,5 +223,138 @@ fn keeps_lazy_boolean_operators_inside_let_scrutinees() {
             else_branch: None,
         },
         "if let false = (a && b) {}",
+    );
+}
+
+#[test]
+fn preserves_async_closure_and_if_let_patterns() {
+
+    let source = "async move || -> u32 { if let Some(n) = value { n } else { 0 } }";
+    let modeled = support::parse_expression(source).unwrap();
+    let Expr::AsyncClosure {
+        body,
+        move_capture: true,
+        return_type: Some(_),
+        ..
+    } = &modeled
+    else {
+        panic!("expected a typed move async closure");
+    };
+    assert!(matches!(
+        body.as_ref(),
+        Expr::Block(block) if matches!(
+            block.expr.as_deref(),
+            Some(Expr::IfLet { pattern: Pattern::TupleStruct { .. }, .. })
+        )
+    ));
+    check_shape(&modeled, source);
+
+    let opaque = "if let pattern!() = value {}";
+    let modeled = support::parse_expression(opaque).unwrap();
+    assert!(matches!(
+        &modeled,
+        Expr::IfLet {
+            pattern: Pattern::Opaque(_),
+            ..
+        }
+    ));
+    check_shape(&modeled, opaque);
+}
+
+fn callable_target() -> Type {
+    Type::Generic(
+        "Rc".to_string(),
+        vec![Type::CallableTrait(CallableTraitType {
+            qualifier: CallableTraitQualifier::Dyn,
+            trait_path: vec!["Fn".to_string()],
+            args: vec![Type::Named("Int".to_string())],
+            return_type: Box::new(Type::Named("Int".to_string())),
+            leading_bounds: Vec::new(),
+            trailing_bounds: Vec::new(),
+            higher_ranked: Vec::new(),
+        })],
+    )
+}
+
+#[test]
+fn casts_keep_one_pair_of_parentheses_outside_call_arguments() {
+    let cast = Expr::Cast(name("callback"), callable_target());
+    let grouped = Expr::Parenthesized(Box::new(cast.clone()));
+    for expression in [cast, grouped] {
+        check_shape(&expression, "(callback as Rc<dyn Fn(Int) -> Int>)");
+    }
+}
+
+#[test]
+fn call_arguments_omit_only_redundant_parentheses() {
+    let cases = [
+        (
+            Expr::Parenthesized(Box::new(Expr::Cast(name("callback"), callable_target()))),
+            "f(callback as Rc<dyn Fn(Int) -> Int>)",
+        ),
+        (
+            Expr::Parenthesized(Box::new(Expr::Block(Block {
+                stmts: vec![],
+                expr: Some(name("value")),
+            }))),
+            "f({ value })",
+        ),
+        (Expr::Parenthesized(unary("-", name("i"))), "f(-i)"),
+        (
+            Expr::Tuple(vec![Expr::Ident("a".into()), Expr::Ident("b".into())]),
+            "f((a, b))",
+        ),
+    ];
+    for (argument, expected) in cases {
+        check_shape(&Expr::Call(name("f"), vec![argument]), expected);
+    }
+}
+
+#[test]
+fn typed_closure_printing_wraps_a_non_block_body() {
+    check_shape(
+        &Expr::TypedClosure(
+            vec![ClosureParam::typed("x", Type::Named("Int".into()))],
+            Type::Named("Int".into()),
+            name("x"),
+            true,
+        ),
+        "move |x: Int| -> Int { x }",
+    );
+}
+
+#[test]
+fn return_statements_end_with_a_semicolon() {
+    let block = Block {
+        stmts: vec![
+            Statement::Expr(Expr::Return(None)),
+            Statement::Expr(Expr::Return(Some(name("value")))),
+        ],
+        expr: None,
+    };
+    check_shape(&Expr::Block(block), "{ return; return value; }");
+}
+
+#[test]
+fn nested_else_if_prints_without_an_extra_block() {
+    let bool_block = |value| Block {
+        stmts: vec![],
+        expr: Some(Box::new(Expr::Literal(Literal::Bool(value)))),
+    };
+    let nested_if = Expr::If {
+        condition: name("inner"),
+        then_branch: bool_block(true),
+        else_branch: Some(bool_block(false)),
+    };
+    check_shape(
+        &Expr::If {
+            condition: name("outer"),
+            then_branch: bool_block(true),
+            else_branch: Some(Block {
+                stmts: vec![],
+                expr: Some(Box::new(nested_if)),
+            }),
+        },
+        "if outer { true } else if inner { true } else { false }",
     );
 }

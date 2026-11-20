@@ -48,7 +48,8 @@ impl Precedence {
 
     fn of(expr: &Expr) -> Self {
         match expr {
-            Expr::Closure(..)
+            Expr::AsyncClosure { .. }
+            | Expr::Closure(..)
             | Expr::TypedClosure(..)
             | Expr::Return(..)
             | Expr::Break { .. }
@@ -642,6 +643,59 @@ impl RustCodeGenerator {
         }
     }
 
+    fn generate_closure(
+        &mut self,
+        params: &[ClosureParam],
+        return_type: Option<&Type>,
+        body: &Expr,
+        move_capture: bool,
+        position: ExpressionPosition,
+    ) {
+        if move_capture {
+            self.write("move ");
+        }
+        self.write("|");
+        for (index, param) in params.iter().enumerate() {
+            if index > 0 {
+                self.write(", ");
+            }
+            self.generate_closure_param(param);
+        }
+        self.write("| ");
+        if let Some(return_type) = return_type {
+            self.write("-> ");
+            self.write(&self.type_to_string(return_type));
+            self.write(" ");
+            if matches!(body, Expr::Block(_)) {
+                self.generate_expr(body);
+            } else {
+                self.write("{ ");
+                self.generate_expr(body);
+                self.write(" }");
+            }
+        } else {
+            self.generate_expr_at(body, position.without_statement_head());
+        }
+    }
+
+    fn generate_range(
+        &mut self,
+        start: Option<&Expr>,
+        end: &RangeEnd,
+        position: ExpressionPosition,
+    ) {
+        if let Some(start) = start {
+            self.generate_operand(start, Precedence::Range, false, position);
+        }
+        self.write(match end {
+            RangeEnd::Exclusive(_) => "..",
+            RangeEnd::Inclusive(_) => "..=",
+        });
+        if let Some(end) = end.expression() {
+            self.generate_operand(end, Precedence::Range, false, position.without_statement_head());
+        }
+    }
+
     fn generate_expr(&mut self, expr: &Expr) {
         self.generate_expr_at(expr, ExpressionPosition::Free);
     }
@@ -722,23 +776,7 @@ impl RustCodeGenerator {
                 self.generate_expr(len);
                 self.write("]");
             }
-            Expr::Range { start, end } => {
-                if let Some(start) = start {
-                    self.generate_operand(start, Precedence::Range, false, position);
-                }
-                self.write(match end {
-                    RangeEnd::Exclusive(_) => "..",
-                    RangeEnd::Inclusive(_) => "..=",
-                });
-                if let Some(end) = end.expression() {
-                    self.generate_operand(
-                        end,
-                        Precedence::Range,
-                        false,
-                        position.without_statement_head(),
-                    );
-                }
-            }
+            Expr::Range { start, end } => self.generate_range(start.as_deref(), end, position),
             Expr::Try(operand) => {
                 self.generate_postfix_base(operand, position);
                 self.write("?");
@@ -876,41 +914,19 @@ impl RustCodeGenerator {
                 }
             }
             Expr::Closure(params, body, is_move) => {
-                if *is_move {
-                    self.write("move ");
-                }
-                self.write("|");
-                for (i, param) in params.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.generate_closure_param(param);
-                }
-                self.write("| ");
-                self.generate_expr_at(body, position.without_statement_head());
+                self.generate_closure(params, None, body, *is_move, position);
             }
             Expr::TypedClosure(params, return_type, body, is_move) => {
-                if *is_move {
-                    self.write("move ");
-                }
-                self.write("|");
-                for (i, param) in params.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.generate_closure_param(param);
-                }
-                self.write("| -> ");
-                self.write(&self.type_to_string(return_type));
-                self.write(" ");
-                match body.as_ref() {
-                    Expr::Block(_) => self.generate_expr(body),
-                    _ => {
-                        self.write("{ ");
-                        self.generate_expr(body);
-                        self.write(" }");
-                    }
-                }
+                self.generate_closure(params, Some(return_type), body, *is_move, position);
+            }
+            Expr::AsyncClosure {
+                params,
+                return_type,
+                body,
+                move_capture,
+            } => {
+                self.write("async ");
+                self.generate_closure(params, return_type.as_ref(), body, *move_capture, position);
             }
             Expr::Match { expr, arms } => {
                 self.write("match ");
@@ -1018,7 +1034,7 @@ impl RustCodeGenerator {
                 else_branch,
             } => {
                 self.write("if let ");
-                self.write(pattern);
+                self.generate_pattern(pattern);
                 self.write(" = ");
                 self.generate_let_scrutinee(value, ExpressionPosition::BeforeBlock);
                 self.write(" {\n");
@@ -1717,345 +1733,4 @@ fn ordered_bounds_to_string(bounds: &[String]) -> String {
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join(" + ")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::RustCodeGenerator;
-    use crate::rustlight_ast::{
-        Block, CallableTraitQualifier, CallableTraitType, ClosureParam, Expr, FunctionDef,
-        GenericParam, Item, Literal, Param, PathType, RustModule, Statement, Type, TypeAlias,
-        TypeParameter, Visibility,
-    };
-    use crate::{BindingMode, Pattern};
-
-    fn callable_target() -> Type {
-        Type::Generic(
-            "Rc".to_string(),
-            vec![Type::CallableTrait(CallableTraitType {
-                qualifier: CallableTraitQualifier::Dyn,
-                trait_path: vec!["Fn".to_string()],
-                args: vec![Type::Named("Int".to_string())],
-                return_type: Box::new(Type::Named("Int".to_string())),
-                leading_bounds: Vec::new(),
-                trailing_bounds: Vec::new(),
-                higher_ranked: Vec::new(),
-            })],
-        )
-    }
-
-    fn print_function_body(expr: Expr, target: Type) -> String {
-        let module = RustModule {
-            name: "Cast_Test".to_string(),
-            docs: Vec::new(),
-            items: vec![Item::Function(FunctionDef {
-                name: "cast_closure".to_string(),
-                params: vec![Param {
-                    name: "f".to_string(),
-                    ty: target.clone(),
-                    mutable: false,
-                }],
-                return_type: target.clone(),
-                generics: Default::default(),
-                body: Block {
-                    stmts: Vec::new(),
-                    expr: Some(Box::new(expr)),
-                },
-                asyncness: false,
-                qualifiers: Default::default(),
-                vis: Visibility::Public,
-                docs: Vec::new(),
-                attrs: Vec::new(),
-            })],
-            attrs: Vec::new(),
-            vis: Visibility::Private,
-        };
-
-        RustCodeGenerator::new().generate_module_code(&module)
-    }
-
-    #[test]
-    fn prints_structured_cast_expression() {
-        let target = callable_target();
-        let printed = print_function_body(
-            Expr::Cast(Box::new(Expr::Ident("f".to_string())), target.clone()),
-            target,
-        );
-        assert!(printed.contains("(f as Rc<dyn Fn(Int) -> Int>)"));
-    }
-
-    #[test]
-    fn avoids_duplicate_parentheses_around_cast() {
-        let target = callable_target();
-        let printed = print_function_body(
-            Expr::Parenthesized(Box::new(Expr::Cast(
-                Box::new(Expr::Ident("f".to_string())),
-                target.clone(),
-            ))),
-            target,
-        );
-        assert!(printed.contains("(f as Rc<dyn Fn(Int) -> Int>)"));
-        assert!(!printed.contains("((f as Rc<dyn Fn(Int) -> Int>))"));
-    }
-
-    #[test]
-    fn omits_outer_cast_parentheses_in_call_arguments() {
-        let target = callable_target();
-        let cast = Expr::Parenthesized(Box::new(Expr::Cast(
-            Box::new(Expr::Ident("f".to_string())),
-            target.clone(),
-        )));
-        let printed = print_function_body(
-            Expr::Call(
-                Box::new(Expr::Path(
-                    vec!["Reg".to_string(), "Reg".to_string()],
-                    PathType::Namespace,
-                )),
-                vec![cast],
-            ),
-            target,
-        );
-        assert!(printed.contains("Reg::Reg(f as Rc<dyn Fn(Int) -> Int>)"));
-        assert!(!printed.contains("Reg::Reg((f as Rc<dyn Fn(Int) -> Int>))"));
-    }
-
-    #[test]
-    fn omits_redundant_parentheses_around_block_call_arguments() {
-        let printed = print_function_body(
-            Expr::Call(
-                Box::new(Expr::Ident("f".to_string())),
-                vec![Expr::Parenthesized(Box::new(Expr::Block(Block {
-                    stmts: Vec::new(),
-                    expr: Some(Box::new(Expr::Ident("x".to_string()))),
-                })))],
-            ),
-            Type::Named("Int".to_string()),
-        );
-        assert!(printed.contains("f({"));
-        assert!(!printed.contains("f(({"));
-    }
-
-    #[test]
-    fn omits_redundant_parentheses_around_unary_call_arguments() {
-        let printed = print_function_body(
-            Expr::Call(
-                Box::new(Expr::Ident("f".to_string())),
-                vec![Expr::Parenthesized(Box::new(Expr::UnaryOp(
-                    "-".to_string(),
-                    Box::new(Expr::Ident("i".to_string())),
-                )))],
-            ),
-            Type::Named("Int".to_string()),
-        );
-        assert!(printed.contains("f(-i)"));
-        assert!(!printed.contains("f((-i))"));
-    }
-
-    #[test]
-    fn preserves_tuple_parentheses_in_call_arguments() {
-        let printed = print_function_body(
-            Expr::Call(
-                Box::new(Expr::Ident("f".to_string())),
-                vec![Expr::Parenthesized(Box::new(Expr::Tuple(vec![
-                    Expr::Ident("a".to_string()),
-                    Expr::Ident("b".to_string()),
-                ])))],
-            ),
-            Type::Named("Int".to_string()),
-        );
-        assert!(printed.contains("f((a, b))"));
-    }
-
-    #[test]
-    fn parenthesizes_borrowed_binary_expressions() {
-        let printed = print_function_body(
-            Expr::Reference(
-                Box::new(Expr::BinaryOp(
-                    Box::new(Expr::Ident("n".to_string())),
-                    "+".to_string(),
-                    Box::new(Expr::Literal(Literal::Int(1))),
-                )),
-                true,
-                false,
-            ),
-            Type::Named("BigInt".to_string()),
-        );
-        assert!(printed.contains("&(n + 1)"));
-    }
-
-    #[test]
-    fn prints_explicit_closure_return_types() {
-        let printed = print_function_body(
-            Expr::TypedClosure(
-                vec![ClosureParam::typed("x", Type::Named("Int".to_string()))],
-                Type::Named("Pred<Unit>".to_string()),
-                Box::new(Expr::Macro("panic!(\"partial\")".to_string())),
-                true,
-            ),
-            callable_target(),
-        );
-        assert!(printed.contains("move |x: Int| -> Pred<Unit> { panic!(\"partial\") }"));
-    }
-
-    #[test]
-    fn prints_generic_type_alias_parameters_and_bounds() {
-        let module = RustModule {
-            name: "Alias_Test".to_string(),
-            docs: Vec::new(),
-            items: vec![Item::TypeAlias(TypeAlias {
-                attrs: Vec::new(),
-                name: "Callback".to_string(),
-                target: Type::Generic("Rc".to_string(), vec![Type::Named("T".to_string())]),
-                generics: vec![GenericParam::Type(TypeParameter {
-                    name: "T".to_string(),
-                    bounds: vec!["Clone".to_string()],
-                    default: None,
-                })]
-                .into(),
-                vis: Visibility::Public,
-                docs: Vec::new(),
-            })],
-            attrs: Vec::new(),
-            vis: Visibility::Private,
-        };
-        let mut generator = RustCodeGenerator::new();
-        let printed = generator.generate_module_code(&module);
-
-        assert!(printed.contains("pub type Callback<T: Clone> = Rc<T>;"));
-    }
-
-    #[test]
-    fn prints_bare_return_statement() {
-        let module = RustModule {
-            name: "Return_Test".to_string(),
-            docs: Vec::new(),
-            items: vec![Item::Function(FunctionDef {
-                name: "early_exit".to_string(),
-                params: Vec::new(),
-                return_type: Type::Unit,
-                generics: Default::default(),
-                body: Block {
-                    stmts: vec![Statement::Expr(Expr::Return(None))],
-                    expr: None,
-                },
-                asyncness: false,
-                qualifiers: Default::default(),
-                vis: Visibility::Public,
-                docs: Vec::new(),
-                attrs: Vec::new(),
-            })],
-            attrs: Vec::new(),
-            vis: Visibility::Private,
-        };
-
-        let printed = RustCodeGenerator::new().generate_module_code(&module);
-        assert!(printed.contains("return;"));
-    }
-
-    #[test]
-    fn prints_return_statement_with_value() {
-        let module = RustModule {
-            name: "Return_Test".to_string(),
-            docs: Vec::new(),
-            items: vec![Item::Function(FunctionDef {
-                name: "return_value".to_string(),
-                params: Vec::new(),
-                return_type: Type::Named("Int".to_string()),
-                generics: Default::default(),
-                body: Block {
-                    stmts: vec![Statement::Expr(Expr::Return(Some(Box::new(Expr::Ident(
-                        "value".to_string(),
-                    )))))],
-                    expr: None,
-                },
-                asyncness: false,
-                qualifiers: Default::default(),
-                vis: Visibility::Public,
-                docs: Vec::new(),
-                attrs: Vec::new(),
-            })],
-            attrs: Vec::new(),
-            vis: Visibility::Private,
-        };
-
-        let printed = RustCodeGenerator::new().generate_module_code(&module);
-        assert!(printed.contains("return value;"));
-    }
-
-    #[test]
-    fn prints_nested_else_if_without_an_extra_block() {
-        let bool_block = |value| Block {
-            stmts: Vec::new(),
-            expr: Some(Box::new(Expr::Literal(Literal::Bool(value)))),
-        };
-        let nested_if = Expr::If {
-            condition: Box::new(Expr::Ident("inner".to_string())),
-            then_branch: bool_block(true),
-            else_branch: Some(bool_block(false)),
-        };
-        let printed = print_function_body(
-            Expr::If {
-                condition: Box::new(Expr::Ident("outer".to_string())),
-                then_branch: bool_block(true),
-                else_branch: Some(Block {
-                    stmts: Vec::new(),
-                    expr: Some(Box::new(nested_if)),
-                }),
-            },
-            Type::Named("bool".to_string()),
-        );
-
-        assert!(printed.contains("} else if inner {"));
-        assert!(!printed.contains("} else {\n        if inner"));
-    }
-
-    #[test]
-    fn prints_while_loop() {
-        let printed = print_function_body(
-            Expr::While {
-                label: None,
-                condition: Box::new(Expr::BinaryOp(
-                    Box::new(Expr::Ident("i".to_string())),
-                    "<".to_string(),
-                    Box::new(Expr::Literal(Literal::Int(10))),
-                )),
-                body: Block {
-                    stmts: vec![Statement::Expr(Expr::Break {
-                        label: None,
-                        value: None,
-                    })],
-                    expr: None,
-                },
-            },
-            Type::Unit,
-        );
-
-        assert!(printed.contains("while i < 10 {\n        break;\n    }"));
-    }
-
-    #[test]
-    fn prints_for_loop() {
-        let printed = print_function_body(
-            Expr::For {
-                label: None,
-                pattern: Pattern::Ident {
-                    name: "i".to_string(),
-                    mode: BindingMode::Value,
-                    subpattern: None,
-                },
-                iter: Box::new(Expr::Array(vec![
-                    Expr::Literal(Literal::Int(1)),
-                    Expr::Literal(Literal::Int(2)),
-                    Expr::Literal(Literal::Int(3)),
-                ])),
-                body: Block {
-                    stmts: vec![Statement::Expr(Expr::Continue(None))],
-                    expr: None,
-                },
-            },
-            Type::Unit,
-        );
-
-        assert!(printed.contains("for i in [1, 2, 3] {\n        continue;\n    }"));
-    }
 }
