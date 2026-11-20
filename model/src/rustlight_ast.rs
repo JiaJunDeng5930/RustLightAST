@@ -864,6 +864,53 @@ pub struct Generics {
     pub where_predicates: Vec<WherePredicate>,
 }
 
+impl Generics {
+    /// Read a type parameter's inline and where-clause bounds in source order.
+    pub fn type_parameter_bounds<'a>(
+        &'a self,
+        parameter: &'a TypeParameter,
+    ) -> impl Iterator<Item = &'a TypeBound> {
+        parameter.bounds.iter().chain(self.where_predicates.iter().flat_map(move |predicate| {
+            match predicate {
+                WherePredicate::Type { subject: Type::Named(name), bounds }
+                    if name == &parameter.name => bounds.as_slice(),
+                _ => &[],
+            }
+        }))
+    }
+
+    /// Read a lifetime parameter's inline and where-clause bounds.
+    pub fn lifetime_parameter_bounds<'a>(
+        &'a self,
+        parameter: &'a LifetimeParameter,
+    ) -> impl Iterator<Item = &'a str> {
+        parameter.bounds.iter().chain(self.where_predicates.iter().flat_map(move |predicate| {
+            match predicate {
+                WherePredicate::Lifetime { subject, bounds } if subject == &parameter.name => {
+                    bounds.as_slice()
+                }
+                _ => &[],
+            }
+        })).map(String::as_str)
+    }
+
+    /// Read where-clause predicates on subjects other than declared parameters.
+    pub fn non_parameter_where_predicates(&self) -> impl Iterator<Item = &WherePredicate> {
+        self.where_predicates.iter().filter(|predicate| match predicate {
+            WherePredicate::Type { subject: Type::Named(name), .. } => {
+                !self.params.iter().filter_map(GenericParam::type_parameter)
+                    .any(|parameter| &parameter.name == name)
+            }
+            WherePredicate::Lifetime { subject, .. } => {
+                !self.params.iter().any(|parameter| {
+                    matches!(parameter, GenericParam::Lifetime(parameter) if &parameter.name == subject)
+                })
+            }
+            WherePredicate::Type { .. } => true,
+        })
+    }
+}
+
 impl From<Vec<GenericParam>> for Generics {
     fn from(params: Vec<GenericParam>) -> Self {
         Self {
@@ -913,9 +960,13 @@ pub enum TypeBound {
 }
 
 impl TypeBound {
+    /// Create a simple unqualified trait bound such as `Clone`.
+    pub fn trait_name(name: impl Into<String>) -> Self {
+        Self::trait_path(false, [name])
+    }
 
     /// Create a required trait bound without generic arguments.
-    pub(crate) fn trait_path<I, S>(absolute: bool, path: I) -> Self
+    pub fn trait_path<I, S>(absolute: bool, path: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -935,6 +986,12 @@ impl TypeBound {
         })
     }
 
+    pub fn is_plain_name(&self, name: &str) -> bool {
+        matches!(self, Self::Trait(TraitBound {
+            absolute: false, higher_ranked, optional: false, parenthesized: false, path,
+        }) if higher_ranked.is_empty() && matches!(&path[..], [segment]
+            if segment.name == name && matches!(segment.arguments, TraitBoundArguments::None)))
+    }
 
     pub fn lifetime(&self) -> Option<&str> {
         match self {
@@ -943,6 +1000,29 @@ impl TypeBound {
         }
     }
 
+    /// A required trait without any generic arguments or higher-ranked binder.
+    pub fn plain_trait_path(&self) -> Option<Vec<String>> {
+        let Self::Trait(bound) = self else {
+            return None;
+        };
+        if bound.optional
+            || !bound.higher_ranked.is_empty()
+            || !bound
+                .path
+                .iter()
+                .all(|segment| matches!(segment.arguments, TraitBoundArguments::None))
+        {
+            return None;
+        }
+        Some(
+            bound
+                .absolute
+                .then(|| "::".to_owned())
+                .into_iter()
+                .chain(bound.path.iter().map(|segment| segment.name.clone()))
+                .collect(),
+        )
+    }
 }
 
 impl From<String> for TypeBound {
@@ -1025,6 +1105,13 @@ impl GenericParam {
         }
     }
 
+    pub fn has_bounds(&self) -> bool {
+        match self {
+            Self::Type(param) => !param.bounds.is_empty(),
+            Self::Lifetime(param) => !param.bounds.is_empty(),
+            Self::Const { .. } => false,
+        }
+    }
 
     pub fn type_parameter(&self) -> Option<&TypeParameter> {
         match self {
