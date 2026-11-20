@@ -23,7 +23,7 @@ mod macro_syntax;
 
 pub use crate::{ItemHeader, ItemHeaderKind, RetainedItemHeader};
 
-use pattern::convert_pattern;
+pub use pattern::{convert_pattern, parse_rust_pattern};
 
 use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
 use syn::{
@@ -56,7 +56,7 @@ pub fn parse_rust_source(source: &str, module_name: impl Into<String>) -> syn::R
 }
 
 /// Lower a parsed file at the Rust source boundary.
-fn convert_file(file: &File, module_name: String) -> syn::Result<RustModule> {
+pub fn convert_file(file: &File, module_name: String) -> syn::Result<RustModule> {
     let items = file
         .items
         .iter()
@@ -86,7 +86,7 @@ fn file_module(
 }
 
 /// Construct an inline module from its parsed header and lowered declarations.
-fn convert_inline_module(module: &syn::ItemMod, mut items: Vec<Item>) -> RustModule {
+pub fn convert_inline_module(module: &syn::ItemMod, mut items: Vec<Item>) -> RustModule {
     let mut outer = Vec::new();
     let mut inner = Vec::new();
     for attr in &module.attrs {
@@ -108,7 +108,7 @@ fn convert_inline_module(module: &syn::ItemMod, mut items: Vec<Item>) -> RustMod
 }
 
 /// Lower a parsed item without reparsing its source text.
-fn convert_item(item: &SynItem) -> syn::Result<Item> {
+pub fn convert_item(item: &SynItem) -> syn::Result<Item> {
     origins::attempt(|| lower_item(item))
 }
 
@@ -225,7 +225,7 @@ fn convert_variant(variant: &syn::Variant) -> syn::Result<Variant> {
 }
 
 /// Lower a parsed struct declaration.
-fn convert_struct(item: &syn::ItemStruct) -> syn::Result<StructDef> {
+pub fn convert_struct(item: &syn::ItemStruct) -> syn::Result<StructDef> {
     Ok(StructDef {
         name: item.ident.to_string(),
         generics: convert_generics(&item.generics)?,
@@ -398,7 +398,7 @@ fn convert_function_body(
 }
 
 /// Lower a parsed function signature around an already converted RustLight body.
-fn convert_function(
+pub fn convert_function(
     signature: &syn::Signature,
     body: Block,
     visibility: &syn::Visibility,
@@ -467,7 +467,7 @@ fn convert_function_declaration(
 }
 
 /// Read the async marker independently of parameter and type conversion.
-fn source_signature_is_async(signature: &syn::Signature) -> bool {
+pub fn source_signature_is_async(signature: &syn::Signature) -> bool {
     signature.asyncness.is_some()
 }
 
@@ -522,7 +522,7 @@ fn lower_fn_arg(arg: &syn::FnArg) -> syn::Result<Param> {
 }
 
 /// Convert the type and generic parameters of an impl without its items.
-fn convert_impl_header(item: &syn::ItemImpl) -> syn::Result<ImplBlock> {
+pub fn convert_impl_header(item: &syn::ItemImpl) -> syn::Result<ImplBlock> {
     if item.defaultness.is_some()
         || item
             .trait_
@@ -547,7 +547,7 @@ fn convert_impl_header(item: &syn::ItemImpl) -> syn::Result<ImplBlock> {
 }
 
 /// Lower an implementation and its members at the source boundary.
-fn convert_implementation(item: &syn::ItemImpl) -> syn::Result<ImplBlock> {
+pub fn convert_implementation(item: &syn::ItemImpl) -> syn::Result<ImplBlock> {
     origins::try_node(Origin::Impl, || lower_implementation(item))
 }
 
@@ -599,7 +599,7 @@ fn convert_impl_item(item: &SynImplItem) -> syn::Result<ImplItem> {
 }
 
 /// Convert a parsed import at the Rust source boundary.
-fn convert_use(item: &syn::ItemUse) -> UseStatement {
+pub fn convert_use(item: &syn::ItemUse) -> UseStatement {
     UseStatement {
         tree: convert_use_tree(&item.tree),
         absolute: item.leading_colon.is_some(),
@@ -637,7 +637,7 @@ pub(crate) fn parse_rust_type(source: &str) -> syn::Result<Type> {
 }
 
 /// Convert a parsed Rust type into the same model used in declarations.
-fn convert_type(ty: &SynType) -> syn::Result<Type> {
+pub fn convert_type(ty: &SynType) -> syn::Result<Type> {
     if let SynType::Group(group) = ty {
         return convert_type(&group.elem);
     }
@@ -990,7 +990,7 @@ fn convert_type_path(path: &syn::Path) -> syn::Result<Type> {
 }
 
 /// Convert a parsed body into RustLight expressions and statements.
-fn convert_block(block: &syn::Block) -> syn::Result<Block> {
+pub fn convert_block(block: &syn::Block) -> syn::Result<Block> {
     origins::try_node(Origin::Block, || lower_block(block))
 }
 
@@ -1061,13 +1061,13 @@ fn convert_item_macro(item: &syn::ItemMacro) -> crate::MacroStmt {
 }
 
 /// A trailing paren/bracket macro without a semicolon occupies expression position.
-fn is_tail_macro(statement: &syn::StmtMacro, last: bool) -> bool {
+pub fn is_tail_macro(statement: &syn::StmtMacro, last: bool) -> bool {
     last && statement.semi_token.is_none()
         && !matches!(statement.mac.delimiter, syn::MacroDelimiter::Brace(_))
 }
 
 /// Preserve the invocation spelling and recognize supported input forms.
-fn convert_macro_invocation(mac: &syn::Macro) -> crate::MacroInvocation {
+pub fn convert_macro_invocation(mac: &syn::Macro) -> crate::MacroInvocation {
     convert_macro_invocation_with_attributes(mac, false)
 }
 
@@ -1083,6 +1083,13 @@ fn convert_macro_invocation_with_attributes(
             syn::MacroDelimiter::Bracket(_) => crate::MacroDelimiter::Bracket,
         },
         tokens: macro_syntax::input(mac.tokens.to_string(), &mac.tokens),
+    })
+}
+
+/// Read the comma-separated expressions recognized at the input boundary.
+pub fn parse_macro_expression_arguments(mac: &crate::MacroInvocation) -> syn::Result<Vec<Expr>> {
+    mac.expression_arguments().map(<[_]>::to_vec).ok_or_else(|| {
+        syn::Error::new(proc_macro2::Span::call_site(), "expected macro expression arguments")
     })
 }
 
@@ -1132,7 +1139,7 @@ fn lower_let_binding(local: &syn::Local, attrs: Vec<String>) -> syn::Result<Stat
 }
 
 /// Convert a parsed Rust expression without reparsing its source.
-fn convert_expr(expr: &syn::Expr) -> syn::Result<Expr> {
+pub fn convert_expr(expr: &syn::Expr) -> syn::Result<Expr> {
     origins::try_node(Origin::Expression, || lower_expr(expr))
 }
 
@@ -1555,12 +1562,12 @@ fn lower_path_segments<'a>(
 }
 
 /// Project modeled arguments on expression path segments, including terminal turbofish.
-fn namespace_type_arguments(path: &syn::Path) -> syn::Result<Vec<crate::PathTypeArguments>> {
+pub fn namespace_type_arguments(path: &syn::Path) -> syn::Result<Vec<crate::PathTypeArguments>> {
     Ok(convert_namespace_path(path)?.arguments)
 }
 
 /// Lower a named or positional member at the Rust source boundary.
-fn convert_member(member: &syn::Member) -> Member {
+pub fn convert_member(member: &syn::Member) -> Member {
     match member {
         syn::Member::Named(name) => Member::Named(name.to_string()),
         syn::Member::Unnamed(index) => Member::Index(index.index),
@@ -1583,7 +1590,7 @@ fn convert_record_field(field: &syn::FieldValue) -> syn::Result<RecordField> {
 }
 
 /// Lower final record path arguments when they fit the generic argument model.
-fn convert_record_path(path: &syn::Path) -> syn::Result<RecordPath> {
+pub fn convert_record_path(path: &syn::Path) -> syn::Result<RecordPath> {
     let mut modeled = convert_namespace_path(path)?;
     if let Some(last) = modeled.arguments.pop() {
         if !modeled.arguments.is_empty() || last.segment + 1 != modeled.segments.len() {
@@ -1647,7 +1654,7 @@ pub(crate) fn parse_cfg_atom(source: &str) -> Result<CfgAtom, SourceParseError> 
 }
 
 /// Lower a parsed Rust path into namespace segments.
-fn path_segments(path: &syn::Path) -> Vec<String> {
+pub fn path_segments(path: &syn::Path) -> Vec<String> {
     path.leading_colon
         .iter()
         .map(|_| String::new())
@@ -1715,7 +1722,7 @@ fn convert_literal(lit: &Lit) -> syn::Result<Literal> {
 }
 
 /// Lower a type bound into the modeled Rust grammar.
-fn convert_type_bound(bound: &TypeParamBound) -> syn::Result<crate::TypeBound> {
+pub fn convert_type_bound(bound: &TypeParamBound) -> syn::Result<crate::TypeBound> {
     match bound {
         TypeParamBound::Lifetime(lifetime) => Ok(crate::TypeBound::Lifetime(lifetime.to_string())),
         TypeParamBound::Trait(bound) => convert_trait_bound(bound).map(crate::TypeBound::Trait),
@@ -1791,7 +1798,7 @@ fn convert_bound_arguments(
 }
 
 /// Lower a parsed Rust generic parameter list and its where clause.
-fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
+pub fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
     origins::attempt(|| lower_generics(generics))
 }
 
@@ -1880,7 +1887,7 @@ fn convert_lifetime_param(param: &syn::LifetimeParam) -> LifetimeParameter {
 }
 
 /// Convert a declaration visibility.
-fn convert_visibility(vis: &SynVisibility) -> Visibility {
+pub fn convert_visibility(vis: &SynVisibility) -> Visibility {
     match vis {
         SynVisibility::Public(_) => Visibility::Public,
         SynVisibility::Restricted(restricted) => Visibility::Restricted(
@@ -1896,7 +1903,7 @@ fn convert_visibility(vis: &SynVisibility) -> Visibility {
 }
 
 /// Render an attribute in its original inner or outer position.
-fn attribute_to_raw_source(attr: &syn::Attribute) -> String {
+pub fn attribute_to_raw_source(attr: &syn::Attribute) -> String {
     let marker = match attr.style {
         syn::AttrStyle::Inner(_) => "#!",
         syn::AttrStyle::Outer => "#",
@@ -1906,16 +1913,16 @@ fn attribute_to_raw_source(attr: &syn::Attribute) -> String {
 }
 
 /// Convert attributes represented by RustLightAST items.
-fn convert_attributes(attrs: &[syn::Attribute]) -> Vec<Attribute> {
+pub fn convert_attributes(attrs: &[syn::Attribute]) -> Vec<Attribute> {
     attrs.iter().map(convert_attribute).collect()
 }
 
 /// Lower data attributes independently of the fields and variants they annotate.
-fn convert_data_attributes(attrs: &[syn::Attribute]) -> Vec<crate::DataAttribute> {
+pub fn convert_data_attributes(attrs: &[syn::Attribute]) -> Vec<crate::DataAttribute> {
     attrs.iter().map(convert_data_attribute).collect()
 }
 
-fn convert_data_attribute(attr: &syn::Attribute) -> crate::DataAttribute {
+pub fn convert_data_attribute(attr: &syn::Attribute) -> crate::DataAttribute {
     let Some(paths) = derive_paths(attr) else {
         return crate::DataAttribute::Other(convert_attribute(attr));
     };
@@ -1942,7 +1949,7 @@ fn convert_attribute(attr: &syn::Attribute) -> Attribute {
 }
 
 /// Recover documentation attributes for a RustLight declaration.
-fn extract_docs(attrs: &[syn::Attribute]) -> Vec<String> {
+pub fn extract_docs(attrs: &[syn::Attribute]) -> Vec<String> {
     attrs
         .iter()
         .filter_map(|attr| {

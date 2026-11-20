@@ -1,5 +1,3 @@
-mod support;
-
 use quote::ToTokens;
 use rustlightast::{
     Block, CallableTraitQualifier, CallableTraitType, ClosureParam, Expr, Literal, Member, Pattern,
@@ -26,7 +24,7 @@ fn unary(op: &str, operand: Box<Expr>) -> Box<Expr> {
 }
 
 fn check_shape(expr: &Expr, expected: &str) {
-    let source = support::print_expression(expr);
+    let source = RustCodeGenerator::new().generate_expression_code(expr);
     let parse = |source: &str| {
         syn::parse_str::<syn::Expr>(source)
             .unwrap_or_else(|error| panic!("{source:?}: {error}"))
@@ -112,7 +110,7 @@ fn preserves_a_leading_block_used_as_a_call_target() {
         vec![],
     );
     let render_tail = |expr| {
-        support::print_block(&Block {
+        RustCodeGenerator::new().generate_block_code(&Block {
             stmts: vec![],
             expr: Some(Box::new(expr)),
         })
@@ -186,7 +184,7 @@ fn groups_struct_literals_exposed_in_control_flow_heads() {
     );
     check_shape(
         &Expr::IfLet {
-            pattern: support::parse_pattern("S { n: 1 }").unwrap(),
+            pattern: rustlightast::parse_rust_pattern("S { n: 1 }").unwrap(),
             value: record(),
             then_branch: empty(),
             else_branch: None,
@@ -228,9 +226,11 @@ fn keeps_lazy_boolean_operators_inside_let_scrutinees() {
 
 #[test]
 fn preserves_async_closure_and_if_let_patterns() {
+    use rustlightast::rustlight_parser::convert_expr;
 
     let source = "async move || -> u32 { if let Some(n) = value { n } else { 0 } }";
-    let modeled = support::parse_expression(source).unwrap();
+    let parsed = syn::parse_str::<syn::Expr>(source).unwrap();
+    let modeled = convert_expr(&parsed).unwrap();
     let Expr::AsyncClosure {
         body,
         move_capture: true,
@@ -249,7 +249,8 @@ fn preserves_async_closure_and_if_let_patterns() {
     ));
     check_shape(&modeled, source);
 
-    assert!(support::parse_expression("if let pattern!() = value {}").is_err());
+    let unsupported = syn::parse_str("if let pattern!() = value {}").unwrap();
+    assert!(convert_expr(&unsupported).is_err());
 }
 
 fn callable_target() -> Type {

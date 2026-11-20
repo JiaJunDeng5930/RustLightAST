@@ -4,10 +4,31 @@ use super::{
 use crate::{BindingMode, Pattern, PatternField, PatternPath};
 
 use super::{origins, Origin};
-use syn::Pat;
+use syn::{
+    parse::{ParseStream, Parser},
+    Pat, Token,
+};
+
+/// Parse a pattern in isolation, including a top-level type annotation.
+pub fn parse_rust_pattern(source: &str) -> Result<Pattern, ParseError> {
+    parse_pattern.parse_str(source)
+}
+
+fn parse_pattern(input: ParseStream<'_>) -> syn::Result<Pattern> {
+    let pattern = convert_pattern(&Pat::parse_multi_with_leading_vert(input)?)?;
+    if input.peek(Token![:]) {
+        input.parse::<Token![:]>()?;
+        Ok(Pattern::Typed {
+            pattern: Box::new(pattern),
+            ty: convert_type(&input.parse()?)?,
+        })
+    } else {
+        Ok(pattern)
+    }
+}
 
 /// Convert a parsed Rust binding pattern into RustLightAST.
-pub(super) fn convert_pattern(pattern: &Pat) -> syn::Result<Pattern> {
+pub fn convert_pattern(pattern: &Pat) -> syn::Result<Pattern> {
     origins::try_node(Origin::Pattern, || lower_pattern(pattern))
 }
 

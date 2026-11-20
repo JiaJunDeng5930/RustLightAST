@@ -1,5 +1,3 @@
-mod support;
-
 use rustlightast::{
     parse_rust_source,
     Expr, GenericArgument, Item, Member, RustCodeGenerator, Statement,
@@ -62,7 +60,7 @@ fn read(input: Option<u32>) -> u32 {
     let Item::Function(read) = &module.items[0] else {
         panic!("expected function");
     };
-    let rustlightast::Statement::Item(worker) = &read.body.stmts[0] else {
+    let Statement::Item(worker) = &read.body.stmts[0] else {
         panic!("expected a local function statement");
     };
     assert!(matches!(worker.as_ref(), Item::Function(_)));
@@ -431,7 +429,8 @@ fn build() {
     assert!(printed.contains("Pending::<std::rc::Rc<u32>>"));
     parse_rust_source(&printed, "roundtrip").unwrap();
 
-    assert!(support::parse_expression("Opaque::<{ const { 3 } }> {}").is_err());
+    let unsupported = syn::parse_str("Opaque::<{ const { 3 } }> {}").unwrap();
+    assert!(rustlightast::rustlight_parser::convert_expr(&unsupported).is_err());
 
 }
 

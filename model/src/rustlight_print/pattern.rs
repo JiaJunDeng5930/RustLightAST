@@ -3,7 +3,7 @@ use crate::{BindingMode, Member, Pattern, PatternField, PatternPath};
 
 impl RustCodeGenerator {
     /// Render a standalone Rust pattern.
-    pub(super) fn generate_pattern_code(&mut self, pattern: &Pattern) -> String {
+    pub fn generate_pattern_code(&mut self, pattern: &Pattern) -> String {
         self.buffer.clear();
         self.generate_pattern(pattern);
         self.buffer.clone()

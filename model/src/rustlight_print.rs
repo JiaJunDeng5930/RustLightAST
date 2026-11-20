@@ -117,8 +117,13 @@ impl RustCodeGenerator {
         }
     }
 
+    /// Print one modeled Rust type at the source boundary.
+    pub fn generate_type_code(&self, ty: &Type) -> String {
+        self.type_to_string(ty)
+    }
+
     /// Render namespace segments for consumers that resolve paths by spelling.
-    fn namespace_path_segments<'a>(
+    pub fn namespace_path_segments<'a>(
         path: &'a [String],
         kind: &PathType,
     ) -> Option<Cow<'a, [String]>> {
@@ -152,7 +157,7 @@ impl RustCodeGenerator {
     }
 
     /// Render a record constructor path with its explicit generic arguments.
-    fn generate_record_path_code(&self, path: &RecordPath) -> String {
+    pub fn generate_record_path_code(&self, path: &RecordPath) -> String {
         match path {
             RecordPath::Segments(segments) => segments.join("::"),
             RecordPath::WithTypeArguments { segments, arguments } => {
@@ -165,10 +170,26 @@ impl RustCodeGenerator {
     }
 
     /// Print an expression for placement at an existing source node.
-    fn generate_expression_code(&mut self, expression: &Expr) -> String {
+    pub fn generate_expression_code(&mut self, expression: &Expr) -> String {
         self.buffer.clear();
         self.indent_level = 0;
         self.generate_expr(expression);
+        self.buffer.clone()
+    }
+
+    /// Render a braced block at the source boundary.
+    pub fn generate_block_code(&mut self, block: &Block) -> String {
+        self.buffer.clear();
+        self.indent_level = 0;
+        self.generate_braced_block(block);
+        self.buffer.clone()
+    }
+
+    /// Render one declaration for publication at its existing source scope.
+    pub fn generate_item_code(&mut self, item: &Item) -> String {
+        self.buffer.clear();
+        self.indent_level = 0;
+        self.generate_item(item);
         self.buffer.clone()
     }
 
