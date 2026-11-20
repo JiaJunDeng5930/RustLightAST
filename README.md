@@ -36,4 +36,8 @@ rustlightast = { package = "rustlightast-model", path = "../RustLightAST/model" 
 It provides the syntax tree, printer, and visitors. The parser package re-exports
 the same types and can pass them directly to consumers of the model package.
 
+`ParsedSourceFile::visit_original_origins` walks declared occurrences and
+their subtrees, including local functions and recognized macro arguments.
+An exact model clone keeps the same occurrence identities within its snapshot.
+
 Run tests with `cargo test --workspace --all-targets --locked`.

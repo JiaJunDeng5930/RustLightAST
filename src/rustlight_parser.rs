@@ -9,8 +9,11 @@ mod declaration_view;
 pub use declaration_view::parse_file_declaration_view;
 
 mod parsed_source;
-pub use parsed_source::ParsedSourceFile;
+pub use parsed_source::{ParsedSourceFile, SourceSnapshotId};
 
+pub mod model_origins;
+use model_origins as origins;
+use model_origins::Kind as Origin;
 
 mod source_file;
 pub use source_file::SourceParseError;
@@ -57,7 +60,7 @@ fn convert_file(file: &File, module_name: String) -> syn::Result<RustModule> {
     let items = file
         .items
         .iter()
-        .map(|item| convert_item(item))
+        .map(|item| origins::try_node(Origin::Item, || convert_item(item)))
         .collect::<syn::Result<Vec<_>>>()?;
     Ok(file_module(file, module_name, items))
 }
@@ -67,6 +70,7 @@ fn file_module(
     module_name: String,
     items: impl IntoIterator<Item = Item>,
 ) -> RustModule {
+    origins::inner_attributes(file.attrs.len());
     RustModule {
         name: module_name,
         docs: Vec::new(),
@@ -91,6 +95,7 @@ fn convert_inline_module(module: &syn::ItemMod, mut items: Vec<Item>) -> RustMod
             syn::AttrStyle::Inner(_) => inner.push(Item::Raw(attribute_to_raw_source(attr))),
         }
     }
+    origins::inner_attributes(inner.len());
     items.splice(..0, inner);
 
     RustModule {
@@ -104,7 +109,7 @@ fn convert_inline_module(module: &syn::ItemMod, mut items: Vec<Item>) -> RustMod
 
 /// Lower a parsed item without reparsing its source text.
 fn convert_item(item: &SynItem) -> syn::Result<Item> {
-    lower_item(item)
+    origins::attempt(|| lower_item(item))
 }
 
 fn lower_item(item: &SynItem) -> syn::Result<Item> {
@@ -187,7 +192,7 @@ fn lower_item(item: &SynItem) -> syn::Result<Item> {
                 .content
                 .as_ref()
                 .map(|(_, items)| items.iter().map(|item| {
-                    convert_item(item)
+                    origins::try_node(Origin::Item, || convert_item(item))
                 }).collect())
                 .transpose()?
                 .unwrap_or_default();
@@ -197,7 +202,7 @@ fn lower_item(item: &SynItem) -> syn::Result<Item> {
                 nested_items,
             ))))
         }
-        SynItem::Trait(item) => convert_trait(item),
+        SynItem::Trait(item) => origins::try_node(Origin::Trait, || convert_trait(item)),
         SynItem::Macro(item) => Ok(Item::Macro(Box::new(convert_item_macro(item)))),
         other => Err(syn::Error::new_spanned(
             other,
@@ -387,9 +392,9 @@ fn convert_function_body(
     visibility: &syn::Visibility,
     attrs: &[syn::Attribute],
 ) -> syn::Result<FunctionDef> {
-    (|| {
+    origins::try_node(Origin::Function, || {
         convert_function(signature, convert_block(body)?, visibility, Vec::new(), convert_attributes(attrs))
-    })()
+    })
 }
 
 /// Lower a parsed function signature around an already converted RustLight body.
@@ -467,7 +472,7 @@ fn source_signature_is_async(signature: &syn::Signature) -> bool {
 }
 
 fn convert_fn_arg(arg: &syn::FnArg) -> syn::Result<Param> {
-    lower_fn_arg(arg)
+    origins::try_node(Origin::Parameter, || lower_fn_arg(arg))
 }
 
 fn fn_arg_attributes(arg: &syn::FnArg) -> &[syn::Attribute] {
@@ -483,9 +488,9 @@ fn lower_fn_arg(arg: &syn::FnArg) -> syn::Result<Param> {
             let ty = if receiver.colon_token.is_some() {
                 convert_type(&receiver.ty)?
             } else {
-                (|| {
-                    convert_type(&receiver.ty)
-                })()?
+                origins::try_node(Origin::SyntheticType, || {
+                    origins::without_origins(|| convert_type(&receiver.ty))
+                })?
             };
             Ok(Param {
                 name: "self".to_string(),
@@ -528,7 +533,7 @@ fn convert_impl_header(item: &syn::ItemImpl) -> syn::Result<ImplBlock> {
     }
     let generics = convert_generics(&item.generics)?;
     let trait_impl = item.trait_.as_ref()
-        .map(|(_, path, _)| convert_type_path(path))
+        .map(|(_, path, _)| origins::try_node(Origin::Type, || convert_type_path(path)))
         .transpose()?;
     let target = convert_type(&item.self_ty)?;
     Ok(ImplBlock {
@@ -543,7 +548,7 @@ fn convert_impl_header(item: &syn::ItemImpl) -> syn::Result<ImplBlock> {
 
 /// Lower an implementation and its members at the source boundary.
 fn convert_implementation(item: &syn::ItemImpl) -> syn::Result<ImplBlock> {
-    lower_implementation(item)
+    origins::try_node(Origin::Impl, || lower_implementation(item))
 }
 
 fn lower_implementation(item: &syn::ItemImpl) -> syn::Result<ImplBlock> {
@@ -621,7 +626,7 @@ fn convert_use_tree(tree: &syn::UseTree) -> UseTree {
 
 fn convert_return_type(output: &ReturnType) -> syn::Result<Type> {
     match output {
-        ReturnType::Default => Ok(Type::Unit),
+        ReturnType::Default => Ok(origins::node(Origin::SyntheticType, || Type::Unit)),
         ReturnType::Type(_, ty) => convert_type(ty),
     }
 }
@@ -636,7 +641,7 @@ fn convert_type(ty: &SynType) -> syn::Result<Type> {
     if let SynType::Group(group) = ty {
         return convert_type(&group.elem);
     }
-    lower_type(ty)
+    origins::try_node(Origin::Type, || lower_type(ty))
 }
 
 fn lower_type(ty: &SynType) -> syn::Result<Type> {
@@ -686,7 +691,7 @@ fn lower_type(ty: &SynType) -> syn::Result<Type> {
         )),
         SynType::TraitObject(TypeTraitObject { dyn_token, bounds }) =>
             if dyn_token.is_some() {
-                convert_callable_trait_bounds(bounds.iter(), CallableTraitQualifier::Dyn).or_else(|_| {
+                origins::attempt(|| convert_callable_trait_bounds(bounds.iter(), CallableTraitQualifier::Dyn)).or_else(|_| {
                     Ok(Type::TraitObject { dyn_token: true, bounds: bounds.iter().map(convert_type_bound).collect::<syn::Result<_>>()? })
                 })
             } else {
@@ -698,7 +703,7 @@ fn lower_type(ty: &SynType) -> syn::Result<Type> {
                     return Ok(opaque);
                 }
             }
-            convert_callable_trait_bounds(bounds.iter(), CallableTraitQualifier::Impl)
+            origins::attempt(|| convert_callable_trait_bounds(bounds.iter(), CallableTraitQualifier::Impl))
                 .or_else(|_| Ok(Type::ImplTraitBounds(bounds.iter().map(convert_type_bound).collect::<syn::Result<_>>()?)))
         }
         SynType::Never(_) => Ok(Type::Never),
@@ -919,7 +924,7 @@ fn is_native_callable_bound_path(path: &syn::Path, module: &str, name: &str) -> 
 fn convert_generic_arguments(
     arguments: &AngleBracketedGenericArguments,
 ) -> syn::Result<Vec<GenericArgument>> {
-    arguments.args.iter().map(convert_generic_argument).collect()
+    origins::attempt(|| arguments.args.iter().map(convert_generic_argument).collect())
 }
 
 fn convert_generic_argument(argument: &SynGenericArgument) -> syn::Result<GenericArgument> {
@@ -986,7 +991,7 @@ fn convert_type_path(path: &syn::Path) -> syn::Result<Type> {
 
 /// Convert a parsed body into RustLight expressions and statements.
 fn convert_block(block: &syn::Block) -> syn::Result<Block> {
-    lower_block(block)
+    origins::try_node(Origin::Block, || lower_block(block))
 }
 
 fn lower_block(block: &syn::Block) -> syn::Result<Block> {
@@ -1000,18 +1005,21 @@ fn lower_block(block: &syn::Block) -> syn::Result<Block> {
                 tail_expr = Some(Box::new(convert_expr(expr)?));
             }
             Stmt::Macro(statement) if is_tail_macro(statement, last) => {
-                let expression = (|| {
+                let expression = origins::node(Origin::Expression, || {
                     Expr::Macro(Box::new(crate::MacroExpr {
                         attrs: statement.attrs.iter().map(attribute_to_raw_source).collect(),
                         invocation: convert_macro_invocation_with_attributes(
                             &statement.mac, !statement.attrs.is_empty(),
                         ),
                     }))
-                })();
+                });
                 tail_expr = Some(Box::new(expression));
             }
             statement => {
-                stmts.push(lower_statement(statement)?);
+                stmts.push(origins::try_node(
+                    Origin::Statement,
+                    || lower_statement(statement),
+                )?);
             }
         }
     }
@@ -1027,7 +1035,7 @@ fn lower_statement(statement: &syn::Stmt) -> syn::Result<Statement> {
         Stmt::Local(local) => return convert_local(local),
         Stmt::Item(SynItem::Macro(item)) => Statement::Macro(convert_item_macro(item)),
         Stmt::Item(item) => Statement::Item(Box::new(
-            convert_item(item)?,
+            origins::try_node(Origin::Item, || convert_item(item))?,
         )),
         Stmt::Expr(expr, _) => Statement::Expr(convert_expr(expr)?),
         Stmt::Macro(statement) => Statement::Macro(crate::MacroStmt {
@@ -1067,7 +1075,7 @@ fn convert_macro_invocation_with_attributes(
     mac: &syn::Macro,
     has_attributes: bool,
 ) -> crate::MacroInvocation {
-    crate::MacroInvocation {
+    origins::macro_invocation(has_attributes, || crate::MacroInvocation {
         path: path_segments(&mac.path),
         delimiter: match mac.delimiter {
             syn::MacroDelimiter::Paren(_) => crate::MacroDelimiter::Parenthesis,
@@ -1075,7 +1083,7 @@ fn convert_macro_invocation_with_attributes(
             syn::MacroDelimiter::Bracket(_) => crate::MacroDelimiter::Bracket,
         },
         tokens: macro_syntax::input(mac.tokens.to_string(), &mac.tokens),
-    }
+    })
 }
 
 fn convert_local(local: &syn::Local) -> syn::Result<Statement> {
@@ -1098,13 +1106,13 @@ fn convert_local(local: &syn::Local) -> syn::Result<Statement> {
         });
     }
 
-    lower_let_binding(local, attrs)
+    origins::try_node(Origin::Binding, || lower_let_binding(local, attrs))
 }
 
 fn lower_let_binding(local: &syn::Local, attrs: Vec<String>) -> syn::Result<Statement> {
     let (pattern, ty) = match &local.pat {
         Pat::Type(typed) if typed.attrs.is_empty() => (
-            convert_pattern(&typed.pat)?,
+            origins::try_node(Origin::PatternAlias, || convert_pattern(&typed.pat))?,
             Some(convert_type(&typed.ty)?),
         ),
         pat => (convert_pattern(pat)?, None),
@@ -1125,7 +1133,7 @@ fn lower_let_binding(local: &syn::Local, attrs: Vec<String>) -> syn::Result<Stat
 
 /// Convert a parsed Rust expression without reparsing its source.
 fn convert_expr(expr: &syn::Expr) -> syn::Result<Expr> {
-    lower_expr(expr)
+    origins::try_node(Origin::Expression, || lower_expr(expr))
 }
 
 fn lower_expr(expr: &syn::Expr) -> syn::Result<Expr> {
@@ -1308,9 +1316,9 @@ fn lower_expr(expr: &syn::Expr) -> syn::Result<Expr> {
         }) if attrs.is_empty() => {
             let condition = match cond.as_ref() {
                 syn::Expr::Let(condition) if condition.attrs.is_empty() => {
-                    let pattern = (|| {
+                    let pattern = origins::try_node(Origin::Condition, || {
                         convert_pattern(&condition.pat)
-                    })()?;
+                    })?;
                     (Some(pattern), Box::new(convert_expr(&condition.expr)?))
                 }
                 condition => (None, Box::new(convert_expr(condition)?)),
@@ -1426,7 +1434,7 @@ fn lower_expr(expr: &syn::Expr) -> syn::Result<Expr> {
 }
 
 fn convert_closure_param(pattern: &syn::Pat) -> syn::Result<ClosureParam> {
-    lower_closure_param(pattern)
+    origins::try_node(Origin::ClosureParameter, || lower_closure_param(pattern))
 }
 
 fn lower_closure_param(pattern: &syn::Pat) -> syn::Result<ClosureParam> {
@@ -1446,12 +1454,12 @@ fn lower_closure_param(pattern: &syn::Pat) -> syn::Result<ClosureParam> {
 fn expr_to_block(expr: &syn::Expr) -> syn::Result<Block> {
     if let syn::Expr::Block(ExprBlock { attrs, label: None, block, .. }) = expr {
         if attrs.is_empty() {
-            return convert_block(block);
+            return origins::try_node(Origin::BlockExpression, || convert_block(block));
         }
     }
-    (|| {
+    origins::try_node(Origin::SyntheticBlock, || {
         Ok(Block { stmts: Vec::new(), expr: Some(Box::new(convert_expr(expr)?)) })
-    })()
+    })
 }
 
 fn convert_match_arm(arm: &syn::Arm) -> syn::Result<MatchArm> {
@@ -1716,7 +1724,7 @@ fn convert_type_bound(bound: &TypeParamBound) -> syn::Result<crate::TypeBound> {
 }
 
 fn convert_trait_bound(bound: &TraitBound) -> syn::Result<crate::TraitBound> {
-    lower_trait_bound(bound)
+    origins::attempt(|| lower_trait_bound(bound))
 }
 
 fn lower_trait_bound(bound: &TraitBound) -> syn::Result<crate::TraitBound> {
@@ -1784,7 +1792,7 @@ fn convert_bound_arguments(
 
 /// Lower a parsed Rust generic parameter list and its where clause.
 fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
-    lower_generics(generics)
+    origins::attempt(|| lower_generics(generics))
 }
 
 fn lower_generics(generics: &syn::Generics) -> syn::Result<Generics> {

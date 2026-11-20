@@ -3,11 +3,12 @@ use super::{
 };
 use crate::{BindingMode, Pattern, PatternField, PatternPath};
 
+use super::{origins, Origin};
 use syn::Pat;
 
 /// Convert a parsed Rust binding pattern into RustLightAST.
 pub(super) fn convert_pattern(pattern: &Pat) -> syn::Result<Pattern> {
-    lower_pattern(pattern)
+    origins::try_node(Origin::Pattern, || lower_pattern(pattern))
 }
 
 fn lower_pattern(pattern: &Pat) -> syn::Result<Pattern> {

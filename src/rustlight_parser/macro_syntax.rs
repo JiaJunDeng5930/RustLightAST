@@ -29,7 +29,7 @@ pub(super) fn input(source: String, tokens: &TokenStream) -> MacroInput {
         .parse2(tokens.clone())
         .ok();
     let expressions = parsed.as_ref().and_then(|expressions| {
-        expressions.iter().map(convert_expr).collect::<Result<_, _>>()
+        super::origins::attempt(|| expressions.iter().map(convert_expr).collect::<Result<_, _>>())
             .ok()
     });
     let may_be_match = parsed
@@ -56,12 +56,12 @@ pub(super) fn input(source: String, tokens: &TokenStream) -> MacroInput {
             }
         }
         None => {
-            let repeat = (|input: syn::parse::ParseStream<'_>| {
+            let repeat = super::origins::attempt(|| (|input: syn::parse::ParseStream<'_>| {
                 let value: syn::Expr = input.parse()?;
                 let count = spanned::parse_repeat_count(input)?;
                 Ok((convert_expr(&value)?, convert_expr(&count)?))
             })
-            .parse2(tokens.clone()).ok();
+            .parse2(tokens.clone())).ok();
             let statics = thread_local_statics(tokens.clone()).map(convert_statics);
             SpecializedMacroInput {
                 repeat,
@@ -72,7 +72,7 @@ pub(super) fn input(source: String, tokens: &TokenStream) -> MacroInput {
     };
     // A pattern such as a literal or a path may also parse as an expression.
     if may_be_match {
-        specialized.match_test = (|input: syn::parse::ParseStream<'_>| {
+        specialized.match_test = super::origins::attempt(|| (|input: syn::parse::ParseStream<'_>| {
             let (value, pattern, guard) = spanned::parse_match_test(input)?;
             Ok(MacroMatchInput {
                 value: convert_expr(&value)?,
@@ -80,7 +80,7 @@ pub(super) fn input(source: String, tokens: &TokenStream) -> MacroInput {
                 guard: guard.map(|(_, guard)| convert_expr(&guard)).transpose()?,
             })
         })
-        .parse2(tokens.clone()).ok();
+        .parse2(tokens.clone())).ok();
     }
     if tokens.is_empty() {
         specialized.statics = Some(Vec::new());
@@ -113,7 +113,7 @@ pub(super) fn item_function_template(
                 .any(|name| attribute.path().is_ident(name))
         })
     {
-        function_template(item.mac.tokens.clone())
+        super::origins::without_origins(|| function_template(item.mac.tokens.clone()))
     } else {
         None
     }

@@ -1,16 +1,29 @@
 //! An immutable source revision and its parser-owned provenance.
 
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
 use crate::{Attribute, Item, RetainedItem, RustModule};
 
-use super::SourceParseError;
+use super::{SourceParseError, model_origins::SourceOrigins};
+
+/// Identity of one parsed physical source, independent of its allocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct SourceSnapshotId(u64);
+
+impl SourceSnapshotId {
+    fn fresh() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 /// A validated physical source file. Queries borrow the same parse and don't
 /// need to reinterpret printed Rust to obtain coordinates or declarations.
 pub struct ParsedSourceFile {
+    identity: SourceSnapshotId,
     source: Arc<str>,
     analysis_model: Arc<RustModule>,
+    origins: SourceOrigins,
     file_attributes: Vec<Attribute>,
     shebang: Option<String>,
     ascii_identifiers: bool,
@@ -22,18 +35,46 @@ impl ParsedSourceFile {
         let file_attributes = super::convert_attributes(&file.attrs);
         let shebang = file.shebang.clone();
         let ascii_identifiers = source.is_ascii() || ascii_identifiers(&file);
-        let analysis_model = super::convert_file(&file, String::new())?;
+        let (analysis_model, origins) = super::model_origins::capture(|| {
+            super::convert_file(&file, String::new())
+        });
+        let analysis_model = analysis_model?;
         Ok(Self {
+            identity: SourceSnapshotId::fresh(),
             source: Arc::from(source),
             analysis_model: Arc::new(analysis_model),
+            origins,
             file_attributes,
             shebang,
             ascii_identifiers,
         })
     }
 
+    /// Index an edited model directly, keeping the input metadata.
+    pub fn with_model(&self, analysis_model: Arc<RustModule>) -> Self {
+        let origins = super::model_origins::index_model(&analysis_model);
+        Self {
+            identity: SourceSnapshotId::fresh(),
+            source: Arc::clone(&self.source),
+            analysis_model,
+            origins,
+            file_attributes: self.file_attributes.clone(),
+            shebang: self.shebang.clone(),
+            ascii_identifiers: self.ascii_identifiers,
+        }
+    }
 
+    /// Visit occurrences in the immutable model produced by this parse.
+    pub fn visit_original_origins<'model>(
+        &'model self,
+        visitor: &mut impl super::model_origins::ModelOriginVisitor<'model>,
+    ) {
+        super::model_origins::visit_file(&self.origins, self.identity, &self.analysis_model, visitor);
+    }
 
+    pub fn identity(&self) -> SourceSnapshotId {
+        self.identity
+    }
 
     pub fn file_has_conditional_attributes(&self) -> bool {
         self.file_attributes.iter().any(conditional_attribute)
@@ -53,6 +94,15 @@ impl ParsedSourceFile {
         Arc::clone(&self.analysis_model)
     }
 
+    pub fn clone_with_origins<'model>(
+        &self,
+        storage: &'model mut Option<RustModule>,
+        visitor: &mut impl super::model_origins::ModelOriginVisitor<'model>,
+    ) {
+        super::model_origins::clone_file(
+            &self.origins, self.identity, &self.analysis_model, storage, visitor,
+        );
+    }
 
     pub fn file_attributes(&self) -> &[Attribute] {
         &self.file_attributes
