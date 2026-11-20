@@ -7,7 +7,7 @@ use syn::{ext::IdentExt, parse::Parser, punctuated::Punctuated, Token};
 use super::{convert_expr, convert_item, path_segments};
 use crate::{
     IdentifierMacroFunctionName, IdentifierMacroFunctionTemplate, Item,
-    MacroDelimiter, MacroInput, MacroInvocation, MacroMatchInput, MacroStatic,
+    MacroInput, MacroMatchInput, MacroStatic,
     SpecializedMacroInput,
 };
 

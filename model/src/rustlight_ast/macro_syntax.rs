@@ -1,21 +1,47 @@
-use std::{fmt, ops::Deref, sync::Arc};
+use std::sync::Arc;
 
 use super::{Attribute, Expr, FunctionDef, MacroInvocation, Pattern, Type, Visibility};
 
-/// Macro input spelling and the syntax recognized at the source boundary.
+/// Macro input as written at ingress, or as constructed by an AST rewrite.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MacroInput {
-    source: String,
-    expressions: Option<Arc<[Expr]>>,
-    identifiers: Option<IdentifierArguments>,
+    syntax: MacroInputSyntax,
     token_identifiers: Arc<[String]>,
-    token_count: usize,
+    syntax_size: usize,
     nested_macro_paths: Option<Arc<[Vec<String>]>>,
-    specialized: Option<Arc<SpecializedMacroInput>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum MacroInputSyntax {
+    Written {
+        source: String,
+        expressions: Option<Arc<[Expr]>>,
+        identifiers: Option<IdentifierArguments>,
+        specialized: Option<Arc<SpecializedMacroInput>>,
+    },
+    Modeled(Arc<ModeledMacroArguments>),
+}
+
+/// A macro argument grammar selected by the caller after resolving the macro.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModeledMacroInput {
+    Expressions {
+        arguments: Vec<Expr>,
+        format_captures: [Option<Vec<String>>; 3],
+    },
+    Repeat(Expr, Expr),
+    Match(MacroMatchInput),
+    Statics(Vec<MacroStatic>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ModeledMacroArguments {
+    pub(crate) input: ModeledMacroInput,
+    pub(crate) trailing_comma: bool,
 }
 
 impl MacroInput {
-    /// Construct the input using projections of the same token sequence.
+    /// Construct the written input and its projections at the source boundary.
     pub fn new(
         source: String,
         expressions: Option<Vec<Expr>>,
@@ -25,32 +51,64 @@ impl MacroInput {
         nested_macro_paths: Option<Vec<Vec<String>>>,
     ) -> Self {
         Self {
-            source,
-            expressions: expressions.map(Into::into),
-            identifiers: identifiers.map(|(values, trailing_comma)| IdentifierArguments {
-                values: values.into(),
-                trailing_comma,
-            }),
+            syntax: MacroInputSyntax::Written {
+                source,
+                expressions: expressions.map(Into::into),
+                identifiers: identifiers.map(|(values, trailing_comma)| IdentifierArguments {
+                    values: values.into(),
+                    trailing_comma,
+                }),
+                specialized: None,
+            },
             token_identifiers: token_identifiers.into(),
-            token_count,
+            syntax_size: token_count,
             nested_macro_paths: nested_macro_paths.map(Into::into),
-            specialized: None,
         }
     }
 
     pub fn with_specialized_syntax(mut self, specialized: SpecializedMacroInput) -> Self {
-        if specialized.repeat.is_some()
-            || specialized.match_test.is_some()
-            || specialized.statics.is_some()
-            || specialized.format_captures.iter().any(Option::is_some)
-        {
-            self.specialized = Some(Arc::new(specialized));
+        if let MacroInputSyntax::Written { specialized: slot, .. } = &mut self.syntax {
+            if specialized.repeat.is_some()
+                || specialized.match_test.is_some()
+                || specialized.statics.is_some()
+                || specialized.format_captures.iter().any(Option::is_some)
+            {
+                *slot = Some(Arc::new(specialized));
+            }
         }
         self
     }
 
+    /// The original token spelling, available for macros read from Rust source.
+    pub fn written_source(&self) -> Option<&str> {
+        match &self.syntax {
+            MacroInputSyntax::Written { source, .. } => Some(source),
+            MacroInputSyntax::Modeled(_) => None,
+        }
+    }
+
+    pub fn trailing_comma(&self) -> bool {
+        match &self.syntax {
+            MacroInputSyntax::Written { source, .. } => source.trim_end().ends_with(','),
+            MacroInputSyntax::Modeled(arguments) => arguments.trailing_comma,
+        }
+    }
+
+    pub(crate) fn modeled_arguments(&self) -> Option<&ModeledMacroArguments> {
+        match &self.syntax {
+            MacroInputSyntax::Written { .. } => None,
+            MacroInputSyntax::Modeled(arguments) => Some(arguments),
+        }
+    }
+
     pub(super) fn expressions(&self) -> Option<&[Expr]> {
-        self.expressions.as_deref()
+        match &self.syntax {
+            MacroInputSyntax::Written { expressions, .. } => expressions.as_deref(),
+            MacroInputSyntax::Modeled(arguments) => match &arguments.input {
+                ModeledMacroInput::Expressions { arguments, .. } => Some(arguments),
+                _ => None,
+            },
+        }
     }
 
     pub(super) fn nested_macro_paths(&self) -> Option<&[Vec<String>]> {
@@ -61,31 +119,71 @@ impl MacroInput {
         &self.token_identifiers
     }
 
-    /// Count groups and their contained tokens, excluding the invocation delimiters.
-    pub fn token_count(&self) -> usize {
-        self.token_count
+    /// The number of tokens read at ingress, including groups.
+    pub fn written_token_count(&self) -> Option<usize> {
+        self.written_source().map(|_| self.syntax_size)
+    }
+
+    /// A work estimate from the tokens read at ingress or modeled syntax nodes.
+    pub fn syntax_size(&self) -> usize {
+        self.syntax_size
     }
 
     pub fn specialized_statics(&self) -> Option<&[MacroStatic]> {
+        if let Some(arguments) = self.modeled_arguments() {
+            if let ModeledMacroInput::Statics(items) = &arguments.input {
+                return Some(items);
+            }
+            return None;
+        }
         self.specialized()?.statics.as_deref()
     }
 
-    pub(super) fn specialized(&self) -> Option<&SpecializedMacroInput> {
-        self.specialized.as_deref()
+    pub(super) fn repeat(&self) -> Option<(&Expr, &Expr)> {
+        if let Some(arguments) = self.modeled_arguments() {
+            if let ModeledMacroInput::Repeat(value, count) = &arguments.input {
+                return Some((value, count));
+            }
+            return None;
+        }
+        let (value, count) = self.specialized()?.repeat.as_ref()?;
+        Some((value, count))
     }
-}
 
-impl Deref for MacroInput {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        &self.source
+    pub(super) fn match_test(&self) -> Option<&MacroMatchInput> {
+        if let Some(arguments) = self.modeled_arguments() {
+            if let ModeledMacroInput::Match(input) = &arguments.input {
+                return Some(input);
+            }
+            return None;
+        }
+        self.specialized()?.match_test.as_ref()
     }
-}
 
-impl fmt::Display for MacroInput {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.source)
+    pub(super) fn format_captures(&self, leading_operands: usize) -> Option<&[String]> {
+        let captures = if let Some(arguments) = self.modeled_arguments() {
+            let ModeledMacroInput::Expressions { format_captures, .. } = &arguments.input else {
+                return None;
+            };
+            format_captures
+        } else {
+            &self.specialized()?.format_captures
+        };
+        captures.get(leading_operands)?.as_deref()
+    }
+
+    fn specialized(&self) -> Option<&SpecializedMacroInput> {
+        match &self.syntax {
+            MacroInputSyntax::Written { specialized, .. } => specialized.as_deref(),
+            MacroInputSyntax::Modeled(_) => None,
+        }
+    }
+
+    fn identifier_arguments(&self) -> Option<&IdentifierArguments> {
+        match &self.syntax {
+            MacroInputSyntax::Written { identifiers, .. } => identifiers.as_ref(),
+            MacroInputSyntax::Modeled(_) => None,
+        }
     }
 }
 
@@ -209,7 +307,7 @@ impl IdentifierMacroFunctionTemplate {
         &'a self,
         invocation: &'a MacroInvocation,
     ) -> Option<impl Iterator<Item = (&'a str, &'a Visibility, Option<&'a FunctionDef>)>> {
-        let arguments = invocation.tokens.identifiers.as_ref()?;
+        let arguments = invocation.tokens.identifier_arguments()?;
         if arguments.values.len() != self.arity || arguments.trailing_comma != self.trailing_comma {
             return None;
         }

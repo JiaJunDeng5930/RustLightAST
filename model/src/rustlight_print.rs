@@ -117,11 +117,6 @@ impl RustCodeGenerator {
         }
     }
 
-    /// Print one modeled Rust type at the source boundary.
-    fn generate_type_code(&self, ty: &Type) -> String {
-        self.type_to_string(ty)
-    }
-
     /// Render namespace segments for consumers that resolve paths by spelling.
     fn namespace_path_segments<'a>(
         path: &'a [String],
@@ -1400,7 +1395,9 @@ impl RustCodeGenerator {
             let mac = &statement.invocation;
             let (open, close) = mac.delimiter.brackets();
             self.generate_path(&mac.path);
-            self.write(&format!("! {name} {open}{}{close}", mac.tokens));
+            self.write(&format!("! {name} {open}"));
+            self.generate_macro_input(&mac.tokens);
+            self.write(close.encode_utf8(&mut [0; 4]));
         } else {
             self.generate_macro_invocation(&statement.invocation);
         }
@@ -1410,7 +1407,60 @@ impl RustCodeGenerator {
     fn generate_macro_invocation(&mut self, mac: &crate::MacroInvocation) {
         let (open, close) = mac.delimiter.brackets();
         self.generate_path(&mac.path);
-        self.write(&format!("!{open}{}{close}", mac.tokens));
+        self.write("!");
+        self.write(open.encode_utf8(&mut [0; 4]));
+        self.generate_macro_input(&mac.tokens);
+        self.write(close.encode_utf8(&mut [0; 4]));
+    }
+
+    fn generate_macro_input(&mut self, input: &crate::MacroInput) {
+        use crate::ModeledMacroInput;
+        let Some(arguments) = input.modeled_arguments() else {
+            self.write(input.written_source().expect("written macro input"));
+            return;
+        };
+        match &arguments.input {
+            ModeledMacroInput::Expressions { arguments, .. } => {
+                for (index, expression) in arguments.iter().enumerate() {
+                    if index != 0 {
+                        self.write(", ");
+                    }
+                    self.generate_expr(expression);
+                }
+            }
+            ModeledMacroInput::Repeat(value, count) => {
+                self.generate_expr(value);
+                self.write("; ");
+                self.generate_expr(count);
+            }
+            ModeledMacroInput::Match(input) => {
+                self.generate_expr(&input.value);
+                self.write(", ");
+                self.generate_pattern(&input.pattern);
+                if let Some(guard) = &input.guard {
+                    self.write(" if ");
+                    self.generate_expr(guard);
+                }
+            }
+            ModeledMacroInput::Statics(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    if index != 0 {
+                        self.write("\n");
+                    }
+                    for attribute in &item.attrs {
+                        self.generate_attribute(attribute);
+                    }
+                    let visibility = self.visibility(&item.visibility);
+                    let ty = self.type_to_string(item.ty.as_ref().expect("modeled macro static type"));
+                    self.write(&format!("{visibility}static {}: {ty} = ", item.name));
+                    self.generate_expr(item.initializer.as_ref().expect("modeled macro static initializer"));
+                    self.write(";");
+                }
+            }
+        }
+        if arguments.trailing_comma {
+            self.write(",");
+        }
     }
 
     fn generate_literal(&mut self, lit: &Literal) {

@@ -12,7 +12,7 @@ pub use declarations::{
 };
 pub use macro_syntax::{
     IdentifierMacroFunctionName, IdentifierMacroFunctionTemplate, ItemMacroSyntax, MacroInput,
-    MacroMatchInput, MacroStatic, SpecializedMacroInput,
+    MacroMatchInput, MacroStatic, ModeledMacroInput, SpecializedMacroInput,
 };
 pub use pattern::{BindingMode, Pattern, PatternField, PatternPath};
 pub use retained_item::{
@@ -619,24 +619,24 @@ impl MacroInvocation {
 
     /// An expression list or a value repeated by a count expression.
     pub fn vector_input(&self) -> Option<(&[Expr], Option<&Expr>)> {
-        if let Some((value, count)) = self.tokens.specialized().and_then(|input| input.repeat.as_ref()) {
+        if let Some((value, count)) = self.tokens.repeat() {
             return Some((std::slice::from_ref(value), Some(count)));
         }
         Some((self.expression_arguments()?, None))
     }
 
     pub fn match_input(&self) -> Option<&MacroMatchInput> {
-        self.tokens.specialized()?.match_test.as_ref()
+        self.tokens.match_test()
     }
 
     pub fn thread_local_statics(&self) -> Option<&[MacroStatic]> {
-        self.tokens.specialized()?.statics.as_deref()
+        self.tokens.specialized_statics()
     }
 
     /// Implicit formatting captures when the format string follows the given
     /// number of leading operands.
     pub(crate) fn format_captures(&self, leading_operands: usize) -> Option<&[String]> {
-        self.tokens.specialized()?.format_captures.get(leading_operands)?.as_deref()
+        self.tokens.format_captures(leading_operands)
     }
 }
 

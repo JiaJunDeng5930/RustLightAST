@@ -270,9 +270,10 @@ fn total() -> u32 {
             .all(|statement| statement.invocation.path == ["crate", "add"]));
         assert_eq!(statements[0].attrs.len(), 1);
         assert!(statements[0].attrs[0].contains("cfg"));
-        assert!(statements[1].invocation.tokens.contains("(1)"));
+        assert!(statements[1].invocation.tokens.written_source().unwrap().contains("(1)"));
     }
 }
+
 
 
 #[test]
