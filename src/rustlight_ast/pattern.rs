@@ -1,4 +1,4 @@
-use super::{Expr, Literal, Member, RangeEnd, Type};
+use super::{Expr, Literal, Member, PathType, PathTypeArguments, RangeEnd, Type};
 
 /// A Rust pattern used by bindings, parameters, and match arms.
 #[derive(Debug, Clone, PartialEq)]
@@ -10,7 +10,7 @@ pub enum Pattern {
         mode: BindingMode,
         subpattern: Option<Box<Pattern>>,
     },
-    Path(Vec<String>),
+    Path(PatternPath),
     Literal(Literal),
     Range {
         start: Option<Box<Expr>>,
@@ -22,11 +22,11 @@ pub enum Pattern {
     Rest,
     Tuple(Vec<Pattern>),
     TupleStruct {
-        path: Vec<String>,
+        path: PatternPath,
         fields: Vec<Pattern>,
     },
     Record {
-        path: Vec<String>,
+        path: PatternPath,
         fields: Vec<PatternField>,
         rest: bool,
     },
@@ -41,6 +41,31 @@ pub enum Pattern {
         mutable: bool,
     },
     Parenthesized(Box<Pattern>),
+}
+
+/// A constructor or constant path with modeled generic arguments in a pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternPath {
+    pub segments: Vec<String>,
+    pub arguments: Vec<PathTypeArguments>,
+}
+
+impl PatternPath {
+    /// Use the same namespace path when resolving an expression constructor.
+    pub fn expression(&self) -> Expr {
+        let kind = if self.arguments.is_empty() {
+            PathType::Namespace
+        } else {
+            PathType::NamespaceWithTypeArguments(self.arguments.clone())
+        };
+        Expr::Path(self.segments.clone(), kind)
+    }
+}
+
+impl From<Vec<String>> for PatternPath {
+    fn from(segments: Vec<String>) -> Self {
+        Self { segments, arguments: Vec::new() }
+    }
 }
 
 impl Pattern {

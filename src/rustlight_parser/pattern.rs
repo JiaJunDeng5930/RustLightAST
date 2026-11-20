@@ -1,7 +1,7 @@
 use super::{
-    convert_literal, convert_member, convert_range, convert_type, path_segments, ParseError,
+    convert_literal, convert_member, convert_namespace_path, convert_range, convert_type, ParseError,
 };
-use crate::{BindingMode, Pattern, PatternField};
+use crate::{BindingMode, Pattern, PatternField, PatternPath};
 use syn::Pat;
 
 /// Convert a parsed Rust binding pattern into RustLightAST.
@@ -85,14 +85,14 @@ fn convert_patterns<'a>(patterns: impl IntoIterator<Item = &'a Pat>) -> syn::Res
     patterns.into_iter().map(convert_pattern).collect()
 }
 
-fn pattern_path(path: &syn::Path, qualified_self: &Option<syn::QSelf>) -> syn::Result<Vec<String>> {
+fn pattern_path(path: &syn::Path, qualified_self: &Option<syn::QSelf>) -> syn::Result<PatternPath> {
     if let Some(qualified_self) = qualified_self {
         return Err(ParseError::new_spanned(
             &qualified_self.ty,
             "unsupported qualified path in pattern",
         ));
     }
-    Ok(path_segments(path))
+    Ok(convert_namespace_path(path))
 }
 
 fn convert_pattern_field(field: &syn::FieldPat) -> syn::Result<PatternField> {

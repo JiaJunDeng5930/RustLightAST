@@ -117,17 +117,27 @@ impl RustCodeGenerator {
         match kind {
             PathType::Namespace => Some(Cow::Borrowed(path)),
             PathType::NamespaceWithTypeArguments(arguments) => {
-                let printer = Self::new();
-                let mut segments = path.to_vec();
-                for list in arguments {
-                    let segment = &mut segments[list.segment];
-                    segment.push_str("::");
-                    printer.append_generic_arguments(segment, &list.arguments);
-                }
-                Some(Cow::Owned(segments))
+                Some(Self::namespace_segments_with_arguments(path, arguments))
             }
             PathType::Qualified(_) => None,
         }
+    }
+
+    fn namespace_segments_with_arguments<'a>(
+        path: &'a [String],
+        arguments: &[PathTypeArguments],
+    ) -> Cow<'a, [String]> {
+        if arguments.is_empty() {
+            return Cow::Borrowed(path);
+        }
+        let printer = Self::new();
+        let mut segments = path.to_vec();
+        for list in arguments {
+            let segment = &mut segments[list.segment];
+            segment.push_str("::");
+            printer.append_generic_arguments(segment, &list.arguments);
+        }
+        Cow::Owned(segments)
     }
 
     /// Render a record constructor path with its explicit generic arguments.

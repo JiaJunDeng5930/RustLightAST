@@ -2,7 +2,7 @@
 
 mod pattern;
 
-pub use pattern::{BindingMode, Pattern, PatternField};
+pub use pattern::{BindingMode, Pattern, PatternField, PatternPath};
 
 /// Lightweight Rust abstract syntax tree (module level)
 #[derive(Debug, Clone, PartialEq)]

@@ -1,7 +1,12 @@
 use super::{ExpressionPosition, RustCodeGenerator};
-use crate::{BindingMode, Member, Pattern, PatternField};
+use crate::{BindingMode, Member, Pattern, PatternField, PatternPath};
 
 impl RustCodeGenerator {
+    fn generate_pattern_path(&mut self, path: &PatternPath) {
+        let segments = Self::namespace_segments_with_arguments(&path.segments, &path.arguments);
+        self.generate_path(&segments);
+    }
+
     pub(super) fn generate_pattern(&mut self, pattern: &Pattern) {
         match pattern {
             Pattern::Ident {
@@ -21,7 +26,7 @@ impl RustCodeGenerator {
                     self.generate_pattern_operand(subpattern);
                 }
             }
-            Pattern::Path(path) => self.generate_path(path),
+            Pattern::Path(path) => self.generate_pattern_path(path),
             Pattern::Literal(literal) => self.generate_literal(literal),
             Pattern::Range { start, end } => {
                 self.generate_range(start.as_deref(), end, ExpressionPosition::Free);
@@ -38,13 +43,13 @@ impl RustCodeGenerator {
                 self.write(")");
             }
             Pattern::TupleStruct { path, fields } => {
-                self.generate_path(path);
+                self.generate_pattern_path(path);
                 self.write("(");
                 self.generate_pattern_list(fields, ", ");
                 self.write(")");
             }
             Pattern::Record { path, fields, rest } => {
-                self.generate_path(path);
+                self.generate_pattern_path(path);
                 self.write(" {");
                 for (index, field) in fields.iter().enumerate() {
                     self.write(if index == 0 { " " } else { ", " });

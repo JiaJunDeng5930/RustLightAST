@@ -1424,25 +1424,25 @@ fn convert_expr_path(expr_path: &ExprPath) -> syn::Result<Expr> {
         ));
     }
 
-    let mut segments = path_segments(&expr_path.path);
-    let type_arguments = namespace_type_arguments(&expr_path.path);
-    if !type_arguments.is_empty() {
-        let root = usize::from(expr_path.path.leading_colon.is_some());
-        for arguments in &type_arguments {
-            segments[arguments.segment] = expr_path.path.segments[arguments.segment - root]
-                .ident
-                .to_string();
+    let path = convert_namespace_path(&expr_path.path);
+    if path.arguments.is_empty() {
+        if let [segment] = path.segments.as_slice() {
+            return Ok(Expr::Ident(segment.clone()));
         }
-        return Ok(Expr::Path(
-            segments,
-            PathType::NamespaceWithTypeArguments(type_arguments),
-        ));
+        Ok(Expr::Path(path.segments, PathType::Namespace))
+    } else {
+        Ok(Expr::Path(path.segments, PathType::NamespaceWithTypeArguments(path.arguments)))
     }
+}
 
-    match segments.as_slice() {
-        [segment] => Ok(Expr::Ident(segment.clone())),
-        _ => Ok(Expr::Path(segments, PathType::Namespace)),
+fn convert_namespace_path(path: &syn::Path) -> crate::PatternPath {
+    let mut segments = path_segments(path);
+    let arguments = namespace_type_arguments(path);
+    let root = usize::from(path.leading_colon.is_some());
+    for list in &arguments {
+        segments[list.segment] = path.segments[list.segment - root].ident.to_string();
     }
+    crate::PatternPath { segments, arguments }
 }
 
 /// Project modeled arguments on expression path segments, including terminal turbofish.
