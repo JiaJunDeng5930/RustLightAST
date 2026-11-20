@@ -1,7 +1,7 @@
 use super::{Expr, Literal, Member, RangeEnd, Type};
 
 /// A Rust pattern used by bindings, parameters, and match arms.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     /// A bare identifier may name a binding or a constant. Resolution decides
     /// which it denotes when no binding modifier or subpattern is present.
@@ -52,7 +52,7 @@ pub enum BindingMode {
     RefMut,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PatternField {
     pub member: Member,
     pub pattern: Pattern,

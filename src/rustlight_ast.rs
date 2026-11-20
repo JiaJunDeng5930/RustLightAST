@@ -5,7 +5,7 @@ mod pattern;
 pub use pattern::{BindingMode, Pattern, PatternField};
 
 /// Lightweight Rust abstract syntax tree (module level)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RustModule {
     pub name: String,
     /// Outer documentation on an inline module declaration.
@@ -18,7 +18,7 @@ pub struct RustModule {
 }
 
 /// Module item definitions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     Raw(String), // raw Rust item or crate-level directive
     Struct(StructDef),
@@ -36,7 +36,7 @@ pub enum Item {
 }
 
 /// Struct definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StructDef {
     pub attrs: Vec<DataAttribute>,
     pub name: String,
@@ -47,7 +47,7 @@ pub struct StructDef {
 }
 
 /// Union definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UnionDef {
     pub attrs: Vec<DataAttribute>,
     pub name: String,
@@ -58,7 +58,7 @@ pub struct UnionDef {
 }
 
 /// Enum definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EnumDef {
     pub attrs: Vec<DataAttribute>,
     pub name: String,
@@ -69,7 +69,7 @@ pub struct EnumDef {
 }
 
 /// Function definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDef {
     pub name: String,
     pub params: Vec<Param>,
@@ -83,14 +83,14 @@ pub struct FunctionDef {
     pub attrs: Vec<Attribute>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FunctionQualifiers {
     pub constness: bool,
     pub unsafety: bool,
     pub abi: Option<FunctionAbi>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FunctionAbi {
     Default,
     Named(String),
@@ -98,7 +98,7 @@ pub enum FunctionAbi {
 
 /// A trait declaration. Default methods share the function and block model
 /// used by free functions and impl methods.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TraitDef {
     pub name: String,
     pub vis: Visibility,
@@ -110,14 +110,14 @@ pub struct TraitDef {
     pub members: Vec<TraitMember>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TraitMember {
     DefaultMethod(FunctionDef),
     Raw(String),
 }
 
 /// Implementation block
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ImplBlock {
     pub unsafety: bool,
     pub attrs: Vec<Attribute>,
@@ -128,7 +128,7 @@ pub struct ImplBlock {
 }
 
 /// Constant definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConstDef {
     pub attrs: Vec<Attribute>,
     pub name: String,
@@ -139,7 +139,7 @@ pub struct ConstDef {
 }
 
 /// Type alias
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypeAlias {
     pub attrs: Vec<Attribute>,
     pub name: String,
@@ -152,7 +152,7 @@ pub struct TypeAlias {
 // ========== Basic type definitions ========== //
 
 /// Type representation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Path(Vec<String>),                // std::vec::Vec
     Named(String),                    // i32, String
@@ -176,7 +176,7 @@ pub enum Type {
 }
 
 /// The syntax of an argument in an angle-bracketed generic argument list.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GenericArgument {
     /// Includes syntax shared with const arguments, such as `N` and `_`.
     /// Resolving that syntax requires information about the generic declaration.
@@ -208,7 +208,7 @@ pub enum PointerKind {
 }
 
 /// A bare function pointer. An omitted result type has Rust's unit semantics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BareFnType {
     pub higher_ranked: Vec<LifetimeParameter>,
     pub unsafety: bool,
@@ -218,27 +218,27 @@ pub struct BareFnType {
     pub output: Option<Type>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BareFnParam {
     pub attrs: Vec<Attribute>,
     pub name: Option<String>,
     pub ty: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BareFnVariadic {
     pub attrs: Vec<Attribute>,
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AssociatedTypeBinding {
     pub name: String,
     pub ty: Type,
 }
 
 /// Callable trait type such as `dyn Fn(A) -> B` or `impl Fn(A) -> B`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CallableTraitType {
     pub qualifier: CallableTraitQualifier,
     /// Namespace segments of the callable trait, with an empty first segment
@@ -258,7 +258,7 @@ pub enum CallableBound {
     Trait(Vec<String>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CallableTraitQualifier {
     Dyn,
     Impl,
@@ -268,7 +268,7 @@ pub enum CallableTraitQualifier {
 ///
 /// Keeping the type structured lets optimization passes inspect and rewrite
 /// closure annotations without reparsing a printed `pattern: Type` string.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClosureParam {
     pub pattern: String,
     pub ty: Option<Type>,
@@ -302,7 +302,7 @@ impl From<String> for ClosureParam {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PathType {
     Namespace, // separated by :: (e.g., std::thread)
     NamespaceWithTypeArguments(Vec<PathTypeArguments>),
@@ -310,20 +310,20 @@ pub enum PathType {
 }
 
 /// Generic arguments attached to a namespace segment.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PathTypeArguments {
     pub segment: usize,
     pub arguments: Vec<GenericArgument>,
 }
 
 /// The `<T>` or `<T as Trait>` prefix of an associated expression path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PathQualification {
     pub self_type: QualifiedSelfType,
     pub trait_path: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum QualifiedSelfType {
     Type(Box<Type>),
     /// Preserved syntax outside the type model. Consumers cannot infer its type.
@@ -331,7 +331,7 @@ pub enum QualifiedSelfType {
 }
 
 /// A path used by a record constructor.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RecordPath {
     /// Namespace segments with any unmodeled argument syntax preserved.
     Segments(Vec<String>),
@@ -343,7 +343,7 @@ pub enum RecordPath {
 }
 
 /// Expression
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Ident(String),
     /// An opaque macro invocation preserved as Rust source, e.g. `panic!("msg")`.
@@ -442,7 +442,7 @@ pub enum Expr {
 }
 
 /// A half-open range can omit its end. An inclusive range requires one.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RangeEnd {
     Exclusive(Option<Box<Expr>>),
     Inclusive(Box<Expr>),
@@ -481,7 +481,7 @@ pub enum Member {
 }
 
 /// The value of a field initializer, in source evaluation order.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RecordField {
     pub member: Member,
     pub value: Expr,
@@ -490,7 +490,7 @@ pub struct RecordField {
 }
 
 // Match expression arm
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub guard: Option<Expr>,
@@ -501,7 +501,7 @@ pub struct MatchArm {
 }
 
 // Distinguish different builder methods such as .name(), .stack_size(), etc.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BuilderMethod {
     Named(String), // e.g., .name("thread_name")
     //StackSize(Box<Expr>), // TODO .stack_size(expr)
@@ -512,7 +512,7 @@ pub enum BuilderMethod {
 }
 
 /// Literal
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     /// Literal source preserved verbatim when its spelling carries Rust type or
     /// escaping information that must survive a parse/print round trip.
@@ -525,14 +525,14 @@ pub enum Literal {
 }
 
 /// Code block
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub stmts: Vec<Statement>,
     pub expr: Option<Box<Expr>>,
 }
 
 /// Statement
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     Let(LetStmt),
     LetElse {
@@ -548,7 +548,7 @@ pub enum Statement {
 }
 
 /// A statement-position macro invocation whose input remains opaque Rust tokens.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MacroStmt {
     pub attrs: Vec<String>,
     pub path: String,
@@ -565,7 +565,7 @@ pub enum MacroDelimiter {
 }
 
 /// let binding
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LetStmt {
     pub attrs: Vec<String>,
     pub ifmut: bool,
@@ -576,7 +576,7 @@ pub struct LetStmt {
 
 // ========== Auxiliary types ========== //
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Visibility {
     Public,
     Private,
@@ -584,7 +584,7 @@ pub enum Visibility {
     None,                    // no visibility needed for trait implementations, follows the trait
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Attribute {
     Structured {
         name: String,
@@ -611,7 +611,7 @@ impl Attribute {
 }
 
 /// Attributes on a data declaration, in source order.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DataAttribute {
     Derive {
         names: Vec<String>,
@@ -647,14 +647,14 @@ impl DataAttribute {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AttributeArg {
     Ident(String),
     Literal(Literal),
     KeyValue(String, Literal),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Field {
     pub name: String,
     pub ty: Type,
@@ -665,7 +665,7 @@ pub struct Field {
 
 /// Field forms shared by structures and enum variants. Empty tuple and
 /// record constructors retain their syntax independently of unit constructors.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Fields {
     Unit,
     Tuple(Vec<Field>),
@@ -688,7 +688,7 @@ impl Fields {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Variant {
     pub name: String,
     pub fields: Fields,
@@ -697,7 +697,7 @@ pub struct Variant {
     pub attrs: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Generics {
     pub params: Vec<GenericParam>,
     /// Constraints whose subjects are not parameters declared here.
@@ -713,7 +713,7 @@ impl From<Vec<GenericParam>> for Generics {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum WherePredicate {
     Type {
         subject: Type,
@@ -725,7 +725,7 @@ pub enum WherePredicate {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GenericParam {
     Type(TypeParameter),
     Lifetime(LifetimeParameter),
@@ -736,7 +736,7 @@ pub enum GenericParam {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypeParameter {
     pub name: String,
     pub bounds: Vec<String>,
@@ -782,7 +782,7 @@ impl GenericParam {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: String,
     pub ty: Type,
@@ -796,14 +796,14 @@ impl Param {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ImplItem {
     Method(FunctionDef),
     AssocConst(ConstDef),
     AssocType(TypeAlias),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModuleDecl {
     pub name: String,
     pub vis: Visibility,
@@ -811,7 +811,7 @@ pub struct ModuleDecl {
     pub attrs: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UseStatement {
     pub path: Vec<String>,
     pub kind: UseKind,
@@ -821,7 +821,7 @@ pub struct UseStatement {
     pub attrs: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UseKind {
     Simple,
     Glob,                // {path}::*
@@ -829,7 +829,7 @@ pub enum UseKind {
 }
 
 /// lazy_static! macro definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LazyStaticDef {
     pub name: String,
     pub ty: Type,
