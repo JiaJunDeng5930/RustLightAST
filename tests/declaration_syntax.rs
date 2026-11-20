@@ -58,3 +58,64 @@ fn extern_members_expose_written_signatures_and_safety() {
         &RustCodeGenerator::new().generate_module_code(&module),
     );
 }
+
+#[test]
+fn trait_interface_types_and_bounds_are_visited_and_can_be_edited() {
+    struct Collect<'a>(Vec<&'a str>);
+    impl<'a> rustlightast::visit::Visit<'a> for Collect<'a> {
+        fn visit_type(&mut self, ty: &'a Type) {
+            if let Type::Named(name) = ty {
+                self.0.push(name);
+            }
+            rustlightast::visit::walk_type(self, ty);
+        }
+    }
+    struct ReplaceInput;
+    impl rustlightast::visit_mut::VisitMut for ReplaceInput {
+        fn visit_type(&mut self, ty: &mut Type) {
+            if let Type::Named(name) = ty {
+                if name == "Input" {
+                    *name = "NewInput".to_owned();
+                }
+            }
+            rustlightast::visit_mut::walk_type(self, ty);
+        }
+    }
+
+    let source = r#"
+        trait Visitor<'a>: Extend<Parent> + 'a {
+            type Entry<'s>: Extend<Bound> where Self: 's;
+            const LIMIT: Count;
+            fn visit(&'a mut self, input: Input) -> Result where Self: Sized;
+            fn default(self: &Self) -> Result { Result::new() }
+        }
+    "#;
+    let mut module = parse_rust_source(source, "visitors").unwrap();
+    let Item::Trait(definition) = &module.items[0] else {
+        panic!("expected trait")
+    };
+    assert!(matches!(definition.supertraits[0], TypeBound::Trait(_)));
+    let [TraitMember::AssocType(entry), TraitMember::AssocConst(limit), TraitMember::RequiredMethod(method), TraitMember::DefaultMethod(default)] =
+        definition.members.as_slice()
+    else {
+        panic!("expected modeled trait members")
+    };
+    assert_eq!(entry.name, "Entry");
+    assert_eq!(entry.generics.params[0].name(), "'s");
+    assert_eq!(limit.name, "LIMIT");
+    assert!(method.shorthand_receiver);
+    assert_eq!(default.return_type, Type::Named("Result".into()));
+    assert_same_tokens(
+        source,
+        &RustCodeGenerator::new().generate_module_code(&module),
+    );
+
+    let mut visitor = Collect(Vec::new());
+    rustlightast::visit::Visit::visit_module(&mut visitor, &module);
+    assert!(["Parent", "Bound", "Count", "Input", "Result"]
+        .iter()
+        .all(|name| visitor.0.contains(name)));
+    rustlightast::visit_mut::VisitMut::visit_item(&mut ReplaceInput, &mut module.items[0]);
+    let output = RustCodeGenerator::new().generate_module_code(&module);
+    assert_same_tokens(&source.replace("input: Input", "input: NewInput"), &output);
+}

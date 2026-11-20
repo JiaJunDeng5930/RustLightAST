@@ -33,7 +33,7 @@ Consumers that receive a RustLight model can depend on the model package:
 rustlightast = { package = "rustlightast-model", path = "../RustLightAST/model" }
 ```
 
-It provides the syntax tree and printer. The parser package re-exports
+It provides the syntax tree, printer, and visitors. The parser package re-exports
 the same types and can pass them directly to consumers of the model package.
 
 Run tests with `cargo test --workspace --all-targets --locked`.

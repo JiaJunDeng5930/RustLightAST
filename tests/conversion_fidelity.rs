@@ -348,3 +348,85 @@ fn prints_generic_type_alias_parameters_and_bounds() {
     let printed = support::print_item(&item);
     assert_eq!(printed.trim(), "pub type Callback<T: Clone> = Rc<T>;");
 }
+
+#[test]
+fn traverses_const_argument_expressions_in_types_and_paths() {
+    use rustlightast::visit::{self, Visit};
+
+    struct ConstArguments(Vec<&'static str>);
+
+    impl<'ast> Visit<'ast> for ConstArguments {
+        fn visit_generic_argument(&mut self, argument: &'ast GenericArgument) {
+            let kind = match argument {
+                GenericArgument::Type(_) => "type",
+                GenericArgument::Lifetime(_) => "lifetime",
+                GenericArgument::Const(_) => "const",
+            };
+            self.0.push(kind);
+            visit::walk_generic_argument(self, argument);
+        }
+    }
+
+    let source = r#"
+fn expressions() {
+    let _: Option<Row<'static, { ORIGINAL }>> = None;
+    let _ = Row::<{ ORIGINAL }> {};
+    let _ = Row::<{ ORIGINAL }>::WIDTH;
+    let _ = <Row<{ ORIGINAL }>>::WIDTH;
+    consume::<u8, { ORIGINAL }>();
+    consume::<Row<'static, { ORIGINAL }>>();
+    consume::<Vec<u8>>();
+}
+"#;
+    let mut module = parse_rust_source(source, "visits").unwrap();
+    let mut arguments = ConstArguments(Vec::new());
+    arguments.visit_module(&module);
+    assert_eq!(
+        arguments.0,
+        [
+            "type", "lifetime", "const", "const", "const", "const", "type", "const", "type",
+            "lifetime", "const", "type", "type"
+        ]
+    );
+
+    let Item::Function(function) = &mut module.items[0] else {
+        panic!("expected function");
+    };
+    assert!(matches!(
+        function.body.stmts.last(),
+        Some(Statement::Expr(Expr::Call(callee, _)))
+            if matches!(callee.as_ref(), Expr::Path(path, PathType::NamespaceWithTypeArguments(args))
+                if path == &["consume"] && args.len() == 1 && args[0].segment == 0
+                    && matches!(&args[0].arguments[..],
+                        [GenericArgument::Type(Type::Generic(name, inner))]
+                        if name == "Vec" && matches!(&inner[..],
+                            [GenericArgument::Type(Type::Named(element))] if element == "u8")))
+    ));
+    rustlightast::visit_mut::visit_block(&mut function.body, &mut |expr| {
+        assert!(!matches!(expr, Expr::Ident(name) if name == "ORIGINAL"));
+        true
+    });
+    let Statement::Let(local) = &mut function.body.stmts[0] else {
+        panic!("expected local with type annotation");
+    };
+    let Some(Type::Generic(_, outer)) = &mut local.ty else {
+        panic!("expected outer generic type");
+    };
+    let [GenericArgument::Type(Type::Generic(_, inner))] = outer.as_mut_slice() else {
+        panic!("expected inner generic type");
+    };
+    let [GenericArgument::Lifetime(_), GenericArgument::Const(expression)] = inner.as_mut_slice()
+    else {
+        panic!("expected const argument");
+    };
+    rustlightast::visit_mut::visit_expr(expression, &mut |expr| {
+        if let Expr::Ident(name) = expr {
+            assert_eq!(name, "ORIGINAL");
+            *name = "REPLACEMENT".into();
+        }
+        true
+    });
+    let printed = RustCodeGenerator::new().generate_module_code(&module);
+    assert_eq!(printed.matches("REPLACEMENT").count(), 1);
+    parse_rust_source(&printed, "roundtrip").unwrap();
+}
