@@ -741,7 +741,7 @@ impl From<Vec<GenericParam>> for Generics {
 pub enum WherePredicate {
     Type {
         subject: Type,
-        bounds: Vec<String>,
+        bounds: Vec<TypeBound>,
     },
     Lifetime {
         subject: String,
@@ -763,8 +763,114 @@ pub enum GenericParam {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeParameter {
     pub name: String,
-    pub bounds: Vec<String>,
+    pub bounds: Vec<TypeBound>,
     pub default: Option<Type>,
+}
+
+/// A type parameter or where-predicate bound.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeBound {
+    Lifetime(String),
+    Trait(TraitBound),
+    /// Syntax retained when the structured bound cannot represent every argument.
+    Opaque(String),
+}
+
+impl TypeBound {
+
+    /// Create a required trait bound without generic arguments.
+    pub(crate) fn trait_path<I, S>(absolute: bool, path: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::Trait(TraitBound {
+            absolute,
+            higher_ranked: Vec::new(),
+            optional: false,
+            parenthesized: false,
+            path: path
+                .into_iter()
+                .map(|name| TraitBoundSegment {
+                    name: name.into(),
+                    arguments: TraitBoundArguments::None,
+                })
+                .collect(),
+        })
+    }
+
+
+    pub fn lifetime(&self) -> Option<&str> {
+        match self {
+            Self::Lifetime(name) => Some(name),
+            _ => None,
+        }
+    }
+
+}
+
+impl From<String> for TypeBound {
+    fn from(source: String) -> Self {
+        fn identifier(spelling: &str) -> bool {
+            let mut chars = spelling.strip_prefix("r#").unwrap_or(spelling).chars();
+            chars
+                .next()
+                .is_some_and(|ch| ch == '_' || ch.is_alphabetic())
+                && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
+        }
+
+        if source.strip_prefix("'").is_some_and(identifier) {
+            return Self::Lifetime(source);
+        }
+        let absolute = source.starts_with("::");
+        let path = source.strip_prefix("::").unwrap_or(&source);
+        if path.split("::").all(identifier) {
+            Self::trait_path(absolute, path.split("::"))
+        } else {
+            Self::Opaque(source)
+        }
+    }
+}
+
+impl From<&str> for TypeBound {
+    fn from(source: &str) -> Self {
+        source.to_owned().into()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitBound {
+    pub absolute: bool,
+    pub higher_ranked: Vec<LifetimeParameter>,
+    pub optional: bool,
+    pub parenthesized: bool,
+    pub path: Vec<TraitBoundSegment>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitBoundSegment {
+    pub name: String,
+    pub arguments: TraitBoundArguments,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TraitBoundArguments {
+    None,
+    Angle(Vec<TraitBoundArgument>),
+    Parenthesized {
+        inputs: Vec<Type>,
+        output: Option<Box<Type>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TraitBoundArgument {
+    Generic(GenericArgument),
+    AssociatedType {
+        name: String,
+        arguments: Option<Vec<TraitBoundArgument>>,
+        value: Type,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -783,13 +889,6 @@ impl GenericParam {
         }
     }
 
-    pub fn bounds(&self) -> &[String] {
-        match self {
-            Self::Type(param) => &param.bounds,
-            Self::Lifetime(param) => &param.bounds,
-            Self::Const { .. } => &[],
-        }
-    }
 
     pub fn type_parameter(&self) -> Option<&TypeParameter> {
         match self {

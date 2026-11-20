@@ -1566,6 +1566,96 @@ fn convert_literal(lit: &Lit) -> syn::Result<Literal> {
     }
 }
 
+/// Lower a type bound, preserving unsupported forms as opaque source.
+fn convert_type_bound(bound: &TypeParamBound) -> crate::TypeBound {
+    match bound {
+        TypeParamBound::Lifetime(lifetime) => crate::TypeBound::Lifetime(lifetime.to_string()),
+        TypeParamBound::Trait(trait_bound) => convert_trait_bound(trait_bound)
+            .map(crate::TypeBound::Trait)
+            .unwrap_or_else(|_| {
+                crate::TypeBound::Opaque(normalize_tokens(bound.to_token_stream()))
+            }),
+        _ => crate::TypeBound::Opaque(normalize_tokens(bound.to_token_stream())),
+    }
+}
+
+fn convert_trait_bound(bound: &TraitBound) -> syn::Result<crate::TraitBound> {
+    use crate::TraitBoundArguments;
+    let higher_ranked = bound
+        .lifetimes
+        .iter()
+        .flat_map(|binder| &binder.lifetimes)
+        .map(|parameter| match parameter {
+            syn::GenericParam::Lifetime(lifetime) if lifetime.attrs.is_empty() => {
+                Ok(convert_lifetime_param(lifetime))
+            }
+            _ => Err(syn::Error::new_spanned(
+                parameter,
+                "unsupported higher-ranked parameter",
+            )),
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
+    let path = bound
+        .path
+        .segments
+        .iter()
+        .map(|segment| {
+            let arguments = match &segment.arguments {
+                PathArguments::None => TraitBoundArguments::None,
+                PathArguments::AngleBracketed(arguments) => {
+                    TraitBoundArguments::Angle(convert_bound_arguments(arguments)?)
+                }
+                PathArguments::Parenthesized(arguments) => TraitBoundArguments::Parenthesized {
+                    inputs: arguments
+                        .inputs
+                        .iter()
+                        .map(convert_type)
+                        .collect::<syn::Result<_>>()?,
+                    output: match &arguments.output {
+                        ReturnType::Default => None,
+                        ReturnType::Type(_, ty) => Some(Box::new(convert_type(ty)?)),
+                    },
+                },
+            };
+            Ok(crate::TraitBoundSegment {
+                name: segment.ident.to_string(),
+                arguments,
+            })
+        })
+        .collect::<syn::Result<_>>()?;
+    Ok(crate::TraitBound {
+        absolute: bound.path.leading_colon.is_some(),
+        higher_ranked,
+        optional: matches!(bound.modifier, syn::TraitBoundModifier::Maybe(_)),
+        parenthesized: bound.paren_token.is_some(),
+        path,
+    })
+}
+
+fn convert_bound_arguments(
+    arguments: &AngleBracketedGenericArguments,
+) -> syn::Result<Vec<crate::TraitBoundArgument>> {
+    arguments
+        .args
+        .iter()
+        .map(|argument| match argument {
+            SynGenericArgument::AssocType(binding) => {
+                Ok(crate::TraitBoundArgument::AssociatedType {
+                    name: binding.ident.to_string(),
+                    arguments: binding
+                        .generics
+                        .as_ref()
+                        .map(convert_bound_arguments)
+                        .transpose()?,
+                    value: convert_type(&binding.ty)?,
+                })
+            }
+            _ => convert_generic_argument(argument).map(crate::TraitBoundArgument::Generic),
+        })
+        .collect()
+}
+
+/// Lower a parsed Rust generic parameter list and its where clause.
 fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
     let mut params = generics
         .params
@@ -1575,11 +1665,7 @@ fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
                 Ok(GenericParam::Type(TypeParameter {
                     name: type_param.ident.to_string(),
                     default: type_param.default.as_ref().map(convert_type).transpose()?,
-                    bounds: type_param
-                        .bounds
-                        .iter()
-                        .map(|bound| normalize_tokens(bound.to_token_stream()))
-                        .collect(),
+                    bounds: type_param.bounds.iter().map(convert_type_bound).collect(),
                 }))
             }
             syn::GenericParam::Lifetime(param) if param.attrs.is_empty() => {
@@ -1602,11 +1688,7 @@ fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
         for predicate in &clause.predicates {
             match predicate {
                 syn::WherePredicate::Type(predicate) if predicate.lifetimes.is_none() => {
-                    let bounds = predicate
-                        .bounds
-                        .iter()
-                        .map(|bound| normalize_tokens(bound.to_token_stream()))
-                        .collect();
+                    let bounds = predicate.bounds.iter().map(convert_type_bound).collect();
                     let local_parameter = match &predicate.bounded_ty {
                         SynType::Path(path) if path.qself.is_none() => path.path.get_ident(),
                         _ => None,
@@ -1655,7 +1737,7 @@ fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
     })
 }
 
-fn extend_bounds(bounds: &mut Vec<String>, additional: Vec<String>) {
+fn extend_bounds<T: PartialEq>(bounds: &mut Vec<T>, additional: Vec<T>) {
     for bound in additional {
         if !bounds.contains(&bound) {
             bounds.push(bound);

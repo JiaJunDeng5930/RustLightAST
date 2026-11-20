@@ -471,16 +471,16 @@ impl RustCodeGenerator {
                 }
                 parameter
             }
-            _ => bounded_name(generic.name(), generic.bounds()),
+            GenericParam::Lifetime(parameter) => bounded_name(&parameter.name, &parameter.bounds),
         }
     }
 
     fn type_parameter_to_string(&self, parameter: &TypeParameter, inline_bounds: bool) -> String {
-        let mut source = if inline_bounds {
-            bounded_name(&parameter.name, &parameter.bounds)
-        } else {
-            parameter.name.clone()
-        };
+        let mut source = parameter.name.clone();
+        if inline_bounds && !parameter.bounds.is_empty() {
+            source.push_str(": ");
+            source.push_str(&self.type_bounds_to_string(&parameter.bounds));
+        }
         if let Some(default) = &parameter.default {
             source.push_str(" = ");
             source.push_str(&self.type_to_string(default));
@@ -523,7 +523,7 @@ impl RustCodeGenerator {
                 format!(
                     "{}: {}",
                     param.name,
-                    ordered_bounds_to_string(&param.bounds)
+                    self.type_bounds_to_string(&param.bounds)
                 )
             })
             .chain(
@@ -536,11 +536,16 @@ impl RustCodeGenerator {
     }
 
     fn where_predicate_to_string(&self, predicate: &WherePredicate) -> String {
-        let (subject, bounds) = match predicate {
-            WherePredicate::Type { subject, bounds } => (self.type_to_string(subject), bounds),
-            WherePredicate::Lifetime { subject, bounds } => (subject.clone(), bounds),
-        };
-        format!("{subject}: {}", ordered_bounds_to_string(bounds))
+        match predicate {
+            WherePredicate::Type { subject, bounds } => format!(
+                "{}: {}",
+                self.type_to_string(subject),
+                self.type_bounds_to_string(bounds)
+            ),
+            WherePredicate::Lifetime { subject, bounds } => {
+                format!("{subject}: {}", ordered_bounds_to_string(bounds))
+            }
+        }
     }
 
     fn write_where_predicates(&mut self, predicates: &[WherePredicate]) {
@@ -1505,25 +1510,128 @@ impl RustCodeGenerator {
             if index > 0 {
                 source.push_str(", ");
             }
-            match argument {
-                GenericArgument::Type(ty) => source.push_str(&self.type_to_string(ty)),
-                GenericArgument::Lifetime(lifetime) => source.push_str(lifetime),
-                GenericArgument::Const(expression) => {
-                    let expression_source = Self::new().generate_expression_code(expression);
-                    // Braces keep a rewritten identifier or expression in const syntax.
-                    let needs_braces =
-                        !matches!(expression.as_ref(), Expr::Literal(_) | Expr::Block(_));
-                    if needs_braces {
-                        source.push_str("{ ");
-                    }
-                    source.push_str(&expression_source);
-                    if needs_braces {
-                        source.push_str(" }");
+            self.append_generic_argument(source, argument);
+        }
+        source.push('>');
+    }
+
+    fn append_generic_argument(&self, source: &mut String, argument: &GenericArgument) {
+        match argument {
+            GenericArgument::Type(ty) => source.push_str(&self.type_to_string(ty)),
+            GenericArgument::Lifetime(lifetime) => source.push_str(lifetime),
+            GenericArgument::Const(expression) => {
+                let expression_source = Self::new().generate_expression_code(expression);
+                // Braces keep a rewritten identifier or expression in const syntax.
+                let needs_braces =
+                    !matches!(expression.as_ref(), Expr::Literal(_) | Expr::Block(_));
+                if needs_braces {
+                    source.push_str("{ ");
+                }
+                source.push_str(&expression_source);
+                if needs_braces {
+                    source.push_str(" }");
+                }
+            }
+        }
+    }
+
+    /// Print a generic type bound at the source boundary.
+    pub(crate) fn generate_type_bound_code(&self, bound: &TypeBound) -> String {
+        let trait_bound = match bound {
+            TypeBound::Lifetime(source) | TypeBound::Opaque(source) => return source.clone(),
+            TypeBound::Trait(bound) => bound,
+        };
+        let mut source = String::new();
+        if trait_bound.parenthesized {
+            source.push('(');
+        }
+        if trait_bound.optional {
+            source.push('?');
+        }
+        if !trait_bound.higher_ranked.is_empty() {
+            let binders = trait_bound
+                .higher_ranked
+                .iter()
+                .map(|parameter| bounded_name(&parameter.name, &parameter.bounds))
+                .collect::<Vec<_>>()
+                .join(", ");
+            source.push_str(&format!("for<{binders}> "));
+        }
+        if trait_bound.absolute {
+            source.push_str("::");
+        }
+        for (index, segment) in trait_bound.path.iter().enumerate() {
+            if index > 0 {
+                source.push_str("::");
+            }
+            source.push_str(&segment.name);
+            match &segment.arguments {
+                TraitBoundArguments::None => {}
+                TraitBoundArguments::Angle(arguments) => {
+                    self.append_bound_arguments(&mut source, arguments)
+                }
+                TraitBoundArguments::Parenthesized { inputs, output } => {
+                    source.push('(');
+                    source.push_str(
+                        &inputs
+                            .iter()
+                            .map(|ty| self.type_to_string(ty))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                    source.push(')');
+                    if let Some(output) = output {
+                        source.push_str(" -> ");
+                        source.push_str(&self.type_to_string(output));
                     }
                 }
             }
         }
+        if trait_bound.parenthesized {
+            source.push(')');
+        }
+        source
+    }
+
+    fn append_bound_arguments(&self, source: &mut String, arguments: &[TraitBoundArgument]) {
+        source.push('<');
+        for (index, argument) in arguments.iter().enumerate() {
+            if index > 0 {
+                source.push_str(", ");
+            }
+            match argument {
+                TraitBoundArgument::Generic(argument) => {
+                    self.append_generic_argument(source, argument)
+                }
+                TraitBoundArgument::AssociatedType {
+                    name,
+                    arguments,
+                    value,
+                } => {
+                    source.push_str(name);
+                    if let Some(arguments) = arguments {
+                        self.append_bound_arguments(source, arguments);
+                    }
+                    source.push_str(" = ");
+                    source.push_str(&self.type_to_string(value));
+                }
+            }
+        }
         source.push('>');
+    }
+
+    fn type_bounds_to_string(&self, bounds: &[TypeBound]) -> String {
+        bounds
+            .iter()
+            .filter(|bound| bound.lifetime() != Some("'static"))
+            .chain(
+                bounds
+                    .iter()
+                    .filter(|bound| bound.lifetime() == Some("'static")),
+            )
+            .map(|bound| self.generate_type_bound_code(bound))
+            .collect::<Vec<_>>()
+            .join(" + ")
     }
 
     fn type_to_string(&self, ty: &Type) -> String {

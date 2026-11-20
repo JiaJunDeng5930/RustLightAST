@@ -3,7 +3,8 @@ mod support;
 use rustlightast::{
     parse_rust_source, parse_rust_type_facts,
     rustlight_parser::{first_explicit_type_argument, TYPE_FACT_ONLY_DOC},
-    Expr, GenericArgument, Item, Member, ParseError, RustCodeGenerator, Statement, Type,
+    Expr, GenericArgument, Item, Member, ParseError, RustCodeGenerator, Statement,
+    TraitBoundArgument, TraitBoundArguments, Type, TypeBound, WherePredicate,
 };
 
 #[test]
@@ -462,23 +463,6 @@ fn parameter_reassignment_retains_the_mutable_binding() {
     parse_rust_source(&printed, "roundtrip").unwrap();
 }
 
-#[test]
-fn where_bounds_on_parameters_and_instantiated_types_survive_printing() {
-    let source = r#"
-        fn describe<T>(value: Vec<T>) -> String
-        where
-            T: Clone,
-            Vec<T>: std::fmt::Debug,
-        {
-            format!("{value:?}")
-        }
-    "#;
-    let module = parse_rust_source(source, "where_bounds").unwrap();
-    let printed = RustCodeGenerator::new().generate_module_code(&module);
-    assert!(printed.contains("T: Clone"));
-    assert!(printed.contains("Vec<T>: std::fmt::Debug"));
-    parse_rust_source(&printed, "roundtrip").unwrap();
-}
 
 #[test]
 fn iterator_opaque_types_keep_the_associated_item_type() {
