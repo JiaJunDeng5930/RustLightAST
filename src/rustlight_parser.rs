@@ -1659,7 +1659,7 @@ fn convert_bound_arguments(
 
 /// Lower a parsed Rust generic parameter list and its where clause.
 fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
-    let mut params = generics
+    let params = generics
         .params
         .iter()
         .map(|param| match param {
@@ -1690,38 +1690,16 @@ fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
         for predicate in &clause.predicates {
             match predicate {
                 syn::WherePredicate::Type(predicate) if predicate.lifetimes.is_none() => {
-                    let bounds = predicate.bounds.iter().map(convert_type_bound).collect();
-                    let local_parameter = match &predicate.bounded_ty {
-                        SynType::Path(path) if path.qself.is_none() => path.path.get_ident(),
-                        _ => None,
-                    }
-                    .and_then(|name| {
-                        params
-                            .iter_mut()
-                            .filter_map(GenericParam::type_parameter_mut)
-                            .find(|param| *name == param.name)
+                    where_predicates.push(WherePredicate::Type {
+                        subject: convert_type(&predicate.bounded_ty)?,
+                        bounds: predicate.bounds.iter().map(convert_type_bound).collect(),
                     });
-                    if let Some(parameter) = local_parameter {
-                        parameter.bounds.extend(bounds);
-                    } else {
-                        where_predicates.push(WherePredicate::Type {
-                            subject: convert_type(&predicate.bounded_ty)?,
-                            bounds,
-                        });
-                    }
                 }
                 syn::WherePredicate::Lifetime(predicate) => {
-                    let subject = predicate.lifetime.to_string();
-                    let bounds = predicate.bounds.iter().map(ToString::to_string).collect();
-                    let parameter = params.iter_mut().find_map(|param| match param {
-                        GenericParam::Lifetime(param) if param.name == subject => Some(param),
-                        _ => None,
+                    where_predicates.push(WherePredicate::Lifetime {
+                        subject: predicate.lifetime.to_string(),
+                        bounds: predicate.bounds.iter().map(ToString::to_string).collect(),
                     });
-                    if let Some(parameter) = parameter {
-                        parameter.bounds.extend(bounds);
-                    } else {
-                        where_predicates.push(WherePredicate::Lifetime { subject, bounds });
-                    }
                 }
                 unsupported => {
                     return Err(syn::Error::new_spanned(

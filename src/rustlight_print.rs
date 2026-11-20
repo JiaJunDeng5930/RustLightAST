@@ -400,7 +400,7 @@ impl RustCodeGenerator {
             if f.qualifiers.unsafety { "unsafe " } else { "" },
             abi,
             f.name,
-            self.generic_names_to_string(&f.generics.params)
+            self.generic_params_to_string(&f.generics.params)
         );
         let mut params_and_return = format!("({})", self.params_to_string(&f.params));
         if f.qualifiers.explicit_return_type || f.return_type != Type::Unit {
@@ -408,7 +408,9 @@ impl RustCodeGenerator {
             params_and_return.push_str(&self.type_to_string(&f.return_type));
         }
         let signature = format!("{}{}", head, params_and_return);
-        let where_clauses = self.function_where_clauses(&f.generics);
+        let where_clauses = f.generics.where_predicates.iter()
+            .map(|predicate| self.where_predicate_to_string(predicate))
+            .collect::<Vec<_>>();
         if !where_clauses.is_empty() {
             if signature.len() <= MAX_FUNCTION_SIGNATURE_WIDTH {
                 self.writeln(&signature);
@@ -447,32 +449,9 @@ impl RustCodeGenerator {
         self.writeln("");
     }
 
-    fn generic_names_to_string(&self, generics: &[GenericParam]) -> String {
-        if generics.is_empty() {
-            return String::new();
-        }
-
-        let mut out = String::from("<");
-        for (i, generic) in generics.iter().enumerate() {
-            if i > 0 {
-                out.push_str(", ");
-            }
-            match generic {
-                GenericParam::Type(parameter) => {
-                    out.push_str(&self.type_parameter_to_string(parameter, false));
-                }
-                GenericParam::Lifetime(_) | GenericParam::Const { .. } => {
-                    out.push_str(&self.generic_param_to_string(generic));
-                }
-            }
-        }
-        out.push('>');
-        out
-    }
-
     fn generic_param_to_string(&self, generic: &GenericParam) -> String {
         match generic {
-            GenericParam::Type(parameter) => self.type_parameter_to_string(parameter, true),
+            GenericParam::Type(parameter) => self.type_parameter_to_string(parameter),
             GenericParam::Const { name, ty, default } => {
                 let mut parameter = format!("const {name}: {}", self.type_to_string(ty));
                 if let Some(value) = default {
@@ -485,9 +464,9 @@ impl RustCodeGenerator {
         }
     }
 
-    fn type_parameter_to_string(&self, parameter: &TypeParameter, inline_bounds: bool) -> String {
+    fn type_parameter_to_string(&self, parameter: &TypeParameter) -> String {
         let mut source = parameter.name.clone();
-        if inline_bounds && !parameter.bounds.is_empty() {
+        if !parameter.bounds.is_empty() {
             source.push_str(": ");
             source.push_str(&self.type_bounds_to_string(&parameter.bounds));
         }
@@ -520,32 +499,6 @@ impl RustCodeGenerator {
                 self.type_to_string(&param.ty)
             )
         }
-    }
-
-    fn function_where_clauses(&self, generics: &Generics) -> Vec<String> {
-        let mut bounded_generics = generics
-            .params
-            .iter()
-            .filter_map(GenericParam::type_parameter)
-            .filter(|generic| !generic.bounds.is_empty())
-            .collect::<Vec<_>>();
-        bounded_generics.sort_by(|left, right| left.name.cmp(&right.name));
-        bounded_generics
-            .into_iter()
-            .map(|param| {
-                format!(
-                    "{}: {}",
-                    param.name,
-                    self.type_bounds_to_string(&param.bounds)
-                )
-            })
-            .chain(
-                generics
-                    .where_predicates
-                    .iter()
-                    .map(|predicate| self.where_predicate_to_string(predicate)),
-            )
-            .collect()
     }
 
     fn where_predicate_to_string(&self, predicate: &WherePredicate) -> String {

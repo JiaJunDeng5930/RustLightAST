@@ -415,7 +415,7 @@ pub fn callback() -> impl for<'a> Fn(&'a u32) -> &'a u32 + Clone { |value| value
 "#;
     let module = parse_rust_source(source, "lifetimes").unwrap();
     let printed = RustCodeGenerator::new().generate_module_code(&module);
-    assert!(printed.contains("relay<'short, 'long: 'short, T>"));
+    assert!(printed.contains("relay<'short, 'long: 'short, T: Clone>"));
     assert!(printed.contains("(value: &'long mut T) -> &'short T"));
     assert!(printed.contains("for<'a> Fn(&'a u32) -> &'a u32 + Clone"));
     parse_rust_source(&printed, "roundtrip").unwrap();

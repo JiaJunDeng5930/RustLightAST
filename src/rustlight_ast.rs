@@ -733,7 +733,7 @@ pub struct Variant {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Generics {
     pub params: Vec<GenericParam>,
-    /// Constraints whose subjects are not parameters declared here.
+    /// Constraints written in the where clause.
     pub where_predicates: Vec<WherePredicate>,
 }
 
