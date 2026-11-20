@@ -88,6 +88,8 @@ pub struct FunctionQualifiers {
     pub constness: bool,
     pub unsafety: bool,
     pub abi: Option<FunctionAbi>,
+    /// Whether the signature explicitly wrote a return type.
+    pub explicit_return_type: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -169,10 +171,13 @@ pub enum Type {
     Reference(Box<Type>, Option<String>, bool),
     Tuple(Vec<Type>),        // (T1, T2)
     Slice(Box<Type>),        // [T]
-    Array(Box<Type>, usize), // [T; N] fixed-size array
+    Array(Box<Type>, Box<Expr>), // [T; N] fixed-size array
     Unit,                    // ()
     Never,                   // !
     Infer,                   // _
+}
+
+impl Type {
 }
 
 /// The syntax of an argument in an angle-bracketed generic argument list.
@@ -542,6 +547,10 @@ pub enum Literal {
         digits: String,
         suffix: Option<String>,
     },
+    /// A byte token, retaining its exact escape spelling.
+    Byte { spelling: String, value: u8 },
+    /// A floating-point token with its original mantissa, exponent and suffix.
+    FloatToken { digits: String, suffix: Option<String> },
     Int(i64),
     Float(f64),
     Str(String),
@@ -911,6 +920,8 @@ pub struct Param {
     pub ty: Type,
     /// Mutability of the binding, independently of a reference type's mutability.
     pub mutable: bool,
+    /// The written pattern for parameters that cannot use the simple name form.
+    pub pattern: Option<Pattern>,
 }
 
 impl Param {

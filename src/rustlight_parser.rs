@@ -204,14 +204,7 @@ fn convert_item(item: &SynItem) -> syn::Result<Item> {
             Vec::new(),
             convert_attributes(&item_fn.attrs),
         )?)),
-        SynItem::Struct(item_struct) => Ok(Item::Struct(StructDef {
-            name: item_struct.ident.to_string(),
-            fields: convert_fields(&item_struct.fields)?,
-            generics: convert_generics(&item_struct.generics)?,
-            docs: Vec::new(),
-            attrs: convert_data_attributes(&item_struct.attrs),
-            vis: convert_visibility(&item_struct.vis),
-        })),
+        SynItem::Struct(item_struct) => convert_struct(item_struct).map(Item::Struct),
         SynItem::Union(item_union) => Ok(Item::Union(UnionDef {
             name: item_union.ident.to_string(),
             fields: item_union
@@ -288,6 +281,18 @@ fn convert_variant(variant: &syn::Variant) -> syn::Result<Variant> {
             .map(|(_, value)| convert_expr(value))
             .transpose()?,
         attrs: variant.attrs.iter().map(attribute_to_raw_source).collect(),
+    })
+}
+
+/// Lower a parsed struct declaration.
+fn convert_struct(item: &syn::ItemStruct) -> syn::Result<StructDef> {
+    Ok(StructDef {
+        name: item.ident.to_string(),
+        fields: convert_fields(&item.fields)?,
+        generics: convert_generics(&item.generics)?,
+        docs: Vec::new(),
+        attrs: convert_data_attributes(&item.attrs),
+        vis: convert_visibility(&item.vis),
     })
 }
 
@@ -391,6 +396,7 @@ fn convert_function(
             constness: signature.constness.is_some(),
             unsafety: signature.unsafety.is_some(),
             abi: signature.abi.as_ref().map(convert_abi),
+            explicit_return_type: matches!(signature.output, syn::ReturnType::Type(..)),
         },
         vis: convert_visibility(visibility),
         docs,
@@ -404,28 +410,25 @@ fn convert_fn_arg(arg: &syn::FnArg) -> syn::Result<Param> {
             name: "self".to_string(),
             ty: convert_type(&receiver.ty)?,
             mutable: receiver.reference.is_none() && receiver.mutability.is_some(),
+            pattern: None,
         }),
         syn::FnArg::Typed(parameter) if parameter.attrs.is_empty() => {
-            let (name, mutable) = match parameter.pat.as_ref() {
+            let (name, mutable, pattern) = match parameter.pat.as_ref() {
                 Pat::Ident(binding)
                     if binding.attrs.is_empty()
                         && binding.by_ref.is_none()
                         && binding.subpat.is_none() =>
                 {
-                    (binding.ident.to_string(), binding.mutability.is_some())
+                    (binding.ident.to_string(), binding.mutability.is_some(), None)
                 }
-                Pat::Wild(wildcard) if wildcard.attrs.is_empty() => ("_".to_string(), false),
-                other => {
-                    return Err(syn::Error::new_spanned(
-                        other,
-                        "unsupported parameter pattern in RustLightAST parser",
-                    ));
-                }
+                Pat::Wild(wildcard) if wildcard.attrs.is_empty() => ("_".to_string(), false, None),
+                other => (String::new(), false, Some(convert_pattern(other)?)),
             };
             Ok(Param {
                 name,
                 ty: convert_type(&parameter.ty)?,
                 mutable,
+                pattern,
             })
         }
         _ => Err(syn::Error::new_spanned(
@@ -592,7 +595,7 @@ fn convert_type(ty: &SynType) -> syn::Result<Type> {
         SynType::Slice(TypeSlice { elem, .. }) => Ok(Type::Slice(Box::new(convert_type(elem)?))),
         SynType::Array(TypeArray { elem, len, .. }) => Ok(Type::Array(
             Box::new(convert_type(elem)?),
-            parse_array_len(len)?,
+            Box::new(convert_expr(len)?),
         )),
         SynType::TraitObject(TypeTraitObject { bounds, .. }) => {
             convert_callable_trait_bounds(bounds.iter(), CallableTraitQualifier::Dyn)
@@ -916,19 +919,6 @@ fn convert_type_path(path: &syn::Path) -> syn::Result<Type> {
         Ok(Type::Path(segments))
     } else {
         Ok(Type::Named(last.ident.to_string()))
-    }
-}
-
-fn parse_array_len(expr: &syn::Expr) -> syn::Result<usize> {
-    match expr {
-        syn::Expr::Lit(ExprLit {
-            lit: Lit::Int(int_lit),
-            ..
-        }) => int_lit.base10_parse(),
-        _ => Err(syn::Error::new_spanned(
-            expr,
-            "array length must be an integer literal",
-        )),
     }
 }
 
@@ -1562,6 +1552,18 @@ fn convert_literal(lit: &Lit) -> syn::Result<Literal> {
                 suffix: (!suffix.is_empty()).then(|| suffix.to_owned()),
             })
         }
+        Lit::Byte(byte) => Ok(Literal::Byte {
+            spelling: byte.to_token_stream().to_string(),
+            value: byte.value(),
+        }),
+        Lit::Float(float) => {
+            let token = float.to_string();
+            let suffix = float.suffix();
+            Ok(Literal::FloatToken {
+                digits: token[..token.len() - suffix.len()].to_owned(),
+                suffix: (!suffix.is_empty()).then(|| suffix.to_owned()),
+            })
+        }
         other => Ok(Literal::Raw(other.to_token_stream().to_string())),
     }
 }
@@ -1700,7 +1702,7 @@ fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
                             .find(|param| *name == param.name)
                     });
                     if let Some(parameter) = local_parameter {
-                        extend_bounds(&mut parameter.bounds, bounds);
+                        parameter.bounds.extend(bounds);
                     } else {
                         where_predicates.push(WherePredicate::Type {
                             subject: convert_type(&predicate.bounded_ty)?,
@@ -1716,7 +1718,7 @@ fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
                         _ => None,
                     });
                     if let Some(parameter) = parameter {
-                        extend_bounds(&mut parameter.bounds, bounds);
+                        parameter.bounds.extend(bounds);
                     } else {
                         where_predicates.push(WherePredicate::Lifetime { subject, bounds });
                     }
@@ -1735,14 +1737,6 @@ fn convert_generics(generics: &syn::Generics) -> syn::Result<Generics> {
         params,
         where_predicates,
     })
-}
-
-fn extend_bounds<T: PartialEq>(bounds: &mut Vec<T>, additional: Vec<T>) {
-    for bound in additional {
-        if !bounds.contains(&bound) {
-            bounds.push(bound);
-        }
-    }
 }
 
 fn convert_lifetime_param(param: &syn::LifetimeParam) -> LifetimeParameter {

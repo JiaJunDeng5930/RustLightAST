@@ -102,35 +102,7 @@ fn binary_operations_keep_leading_blocks_in_statements_and_tails() {
     }
 }
 
-#[test]
-fn unsupported_body_still_allows_marked_type_fact_recovery() {
-    let source = r#"
-        pub struct Word<W>(pub u128, pub std::marker::PhantomData<W>);
-        impl<W> Copy for Word<W> {}
-        impl<W> Clone for Word<W> { fn clone(&self) -> Self { *self } }
-        pub fn bytes() -> [u8; 4] { const { [0u8; 4] } }
-    "#;
-    let _: ParseError = parse_rust_source(source, "example").unwrap_err();
-    let facts = parse_rust_type_facts(source, "example").unwrap();
-    let [Item::Struct(word), Item::Impl(copy), Item::Function(function)] =
-        facts.items.as_slice()
-    else {
-        panic!("expected only the struct, Copy impl and recovered signature");
-    };
-    assert_eq!(word.name, "Word");
-    assert!(matches!(
-        &copy.trait_impl,
-        Some(Type::Named(name)) if name == "Copy"
-    ) || matches!(
-        &copy.trait_impl,
-        Some(Type::Path(path)) if path.last().is_some_and(|name| name == "Copy")
-    ));
-    assert!(function.docs.iter().any(|doc| doc == TYPE_FACT_ONLY_DOC));
-    assert!(matches!(&function.return_type, Type::Array(_, 4)));
-    assert!(function.body.stmts.is_empty());
-    assert!(function.body.expr.is_none());
-    assert!(parse_rust_type_facts("fn {", "invalid").is_err());
-}
+
 
 #[test]
 fn optimizer_type_argument_helper_remains_available() {

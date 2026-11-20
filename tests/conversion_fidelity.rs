@@ -12,6 +12,7 @@ fn parse_and_print(source: &str) -> (RustModule, String) {
     (module, printed)
 }
 
+
 #[test]
 fn function_qualifiers_and_local_generics_survive_conversion() {
     let source = r#"
@@ -22,6 +23,7 @@ fn function_qualifiers_and_local_generics_survive_conversion() {
             const fn local() -> u8 { 3 }
             fn collect() -> Vec<u8> { [1u8].into_iter().collect::<Vec<_>>() }
         }
+        fn explicit_unit() -> () {}
     "#;
     let (module, printed) = parse_and_print(source);
     assert!(
@@ -30,6 +32,8 @@ fn function_qualifiers_and_local_generics_survive_conversion() {
     );
     assert!(printed.contains("const fn local"), "{printed}");
     assert!(printed.contains("unsafe impl Send for S"), "{printed}");
+    assert!(printed.contains("fn outer() {"), "{printed}");
+    assert!(printed.contains("fn explicit_unit() -> () {"), "{printed}");
     let Item::Function(outer) = &module.items[3] else {
         panic!("outer function is opaque");
     };
@@ -55,7 +59,6 @@ fn explicit_enum_discriminants_survive_printing() {
 #[test]
 fn unsupported_substructure_never_disappears_from_preserved_source() {
     let cases = [
-        ("struct Buf<const N: usize>([u8; N]);", "const N"),
         ("fn f(#[cfg(any())] x: u8) {}", "#[cfg"),
         ("fn f() { #[cfg(any())] missing(); }", "#[cfg"),
         ("fn f(x: u8) { let _p = &raw const x; }", "&raw const"),

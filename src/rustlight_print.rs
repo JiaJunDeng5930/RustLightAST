@@ -402,11 +402,11 @@ impl RustCodeGenerator {
             f.name,
             self.generic_names_to_string(&f.generics.params)
         );
-        let params_and_return = format!(
-            "({}) -> {}",
-            self.params_to_string(&f.params),
-            self.type_to_string(&f.return_type)
-        );
+        let mut params_and_return = format!("({})", self.params_to_string(&f.params));
+        if f.qualifiers.explicit_return_type || f.return_type != Type::Unit {
+            params_and_return.push_str(" -> ");
+            params_and_return.push_str(&self.type_to_string(&f.return_type));
+        }
         let signature = format!("{}{}", head, params_and_return);
         let where_clauses = self.function_where_clauses(&f.generics);
         if !where_clauses.is_empty() {
@@ -507,7 +507,10 @@ impl RustCodeGenerator {
     }
 
     fn param_to_string(&self, param: &Param) -> String {
-        if param.name.is_empty() {
+        if let Some(pattern) = &param.pattern {
+            let pattern = RustCodeGenerator::new().generate_pattern_code(pattern);
+            format!("{pattern}: {}", self.type_to_string(&param.ty))
+        } else if param.name.is_empty() {
             self.type_to_string(&param.ty)
         } else {
             let modifier = if param.mutable { "mut " } else { "" };
@@ -1268,8 +1271,8 @@ impl RustCodeGenerator {
 
     fn generate_literal(&mut self, lit: &Literal) {
         match lit {
-            Literal::Raw(source) => self.write(source),
-            Literal::Integer { digits, suffix } => {
+            Literal::Raw(source) | Literal::Byte { spelling: source, .. } => self.write(source),
+            Literal::Integer { digits, suffix } | Literal::FloatToken { digits, suffix } => {
                 self.write(digits);
                 if let Some(suffix) = suffix {
                     self.write(suffix);
@@ -1731,7 +1734,11 @@ impl RustCodeGenerator {
                 s
             }
             Type::Slice(inner) => format!("[{}]", self.type_to_string(inner)),
-            Type::Array(inner, size) => format!("[{}; {}]", self.type_to_string(inner), size),
+            Type::Array(inner, size) => format!(
+                "[{}; {}]",
+                self.type_to_string(inner),
+                Self::new().generate_expression_code(size),
+            ),
             Type::Unit => "()".to_string(),
             Type::Never => "!".to_string(),
             Type::Infer => "_".to_string(),
