@@ -2,6 +2,7 @@ use super::{convert_literal, convert_member, convert_type, path_segments, ParseE
 use crate::{BindingMode, Pattern, PatternField};
 use syn::Pat;
 
+/// Convert a parsed Rust binding pattern into RustLightAST.
 pub(super) fn convert_pattern(pattern: &Pat) -> syn::Result<Pattern> {
     match pattern {
         Pat::Ident(binding) => Ok(Pattern::Ident {
