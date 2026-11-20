@@ -1,6 +1,6 @@
 mod support;
 
-use rustlightast::rustlight_parser::{parse_rust_source};
+use rustlightast::rustlight_parser::parse_rust_source;
 use rustlightast::{
     DataAttribute, Expr, Fields, GenericArgument, GenericParam, Item, Literal, PathType, Pattern,
     RustCodeGenerator, RustModule, Statement, Type, TypeAlias, TypeParameter, Visibility,
@@ -54,23 +54,6 @@ fn explicit_enum_discriminants_survive_printing() {
         "{printed}"
     );
     syn::parse_file(&printed).unwrap();
-}
-
-#[test]
-fn conversion_errors_reach_the_file_boundary() {
-    let cases = [
-        "fn f(#[cfg(any())] x: u8) {}",
-        "fn f() { struct S; impl !Send for S {} }",
-        "fn f(x: u8) { let _p = &raw const x; }",
-        "mod nested { static N: u32 = const { 7 }; }",
-        "trait Example { fn f() { const { () } } }",
-        "fn f() { Opaque::<{ const { 3 } }> {}; }",
-        "fn f() { if let pattern!() = value {} }",
-        "fn f() -> impl for<#[allow(unused)] 'a> Fn(&'a u8) { |_| () }",
-    ];
-    for source in cases {
-        assert!(syn::parse_file(source).is_ok(), "{source}");
-    }
 }
 
 

@@ -7,13 +7,13 @@ pub use syn::Error as ParseError;
 
 
 
-
 mod source_file;
 pub use source_file::SourceParseError;
 
 mod pattern;
 mod macro_syntax;
 
+pub use crate::{ItemHeader, ItemHeaderKind, RetainedItemHeader};
 
 use pattern::convert_pattern;
 

@@ -3,6 +3,7 @@
 mod declarations;
 mod pattern;
 mod macro_syntax;
+mod retained_item;
 
 pub use declarations::{
     AssociatedConstDeclaration, AssociatedTypeDeclaration, DeclaredParam, ForeignBlock, ForeignMember,
@@ -14,6 +15,10 @@ pub use macro_syntax::{
     MacroMatchInput, MacroStatic, SpecializedMacroInput,
 };
 pub use pattern::{BindingMode, Pattern, PatternField, PatternPath};
+pub use retained_item::{
+    ItemHeader, ItemHeaderKind, RetainedDeclaration, RetainedImplementation,
+    RetainedItem, RetainedItemHeader, RetainedTraitImplementation, RetainedVariantBinding,
+};
 
 /// Lightweight Rust abstract syntax tree (module level)
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +37,7 @@ pub struct RustModule {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     Raw(String), // opaque Rust syntax or crate-level directive
+    Retained(Box<RetainedItem>),
     Macro(Box<MacroStmt>),
     Struct(StructDef),
     Enum(EnumDef),

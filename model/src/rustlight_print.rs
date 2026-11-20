@@ -214,6 +214,13 @@ impl RustCodeGenerator {
     fn generate_item(&mut self, item: &Item) {
         match item {
             Item::Raw(raw) => self.generate_raw(raw),
+            Item::Retained(item) => {
+                if let Some(model) = item.modeled_body_item().filter(|_| item.source().is_empty()) {
+                    self.generate_item(model);
+                } else {
+                    self.generate_raw(item.source());
+                }
+            }
             Item::Macro(item) => self.generate_macro_statement(item),
             Item::Struct(s) => self.generate_struct(s),
             Item::Enum(e) => self.generate_enum(e),
