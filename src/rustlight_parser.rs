@@ -133,26 +133,71 @@ pub fn parse_and_print_rust_source(
 
 /// Lower a parsed file at the Rust source boundary.
 fn convert_file(file: &File, module_name: String) -> syn::Result<RustModule> {
-    let mut items = file
-        .attrs
+    let items = file
+        .items
         .iter()
-        .map(|attr| Item::Raw(attribute_to_raw_source(attr)))
-        .collect::<Vec<_>>();
+        .map(convert_item)
+        .collect::<syn::Result<Vec<_>>>()?;
+    Ok(file_module(file, module_name, items))
+}
 
-    items.extend(
-        file.items
-            .iter()
-            .map(convert_item)
-            .collect::<syn::Result<Vec<_>>>()?,
-    );
+/// Convert supported declarations and preserve other declarations as opaque items.
+///
+/// Inline modules still expose their supported declarations to visitors.
+pub fn convert_file_preserving_items(file: &File, module_name: String) -> RustModule {
+    file_module(
+        file,
+        module_name,
+        file.items.iter().map(convert_item_preserving),
+    )
+}
 
-    Ok(RustModule {
+fn file_module(file: &File, module_name: String, items: impl IntoIterator<Item = Item>) -> RustModule {
+    RustModule {
         name: module_name,
         docs: Vec::new(),
-        items,
+        items: file
+            .attrs
+            .iter()
+            .map(|attr| Item::Raw(attribute_to_raw_source(attr)))
+            .chain(items)
+            .collect(),
         attrs: Vec::new(),
         vis: Visibility::Private,
-    })
+    }
+}
+
+fn convert_item_preserving(item: &SynItem) -> Item {
+    if let SynItem::Mod(module) = item {
+        if let Some((_, items)) = &module.content {
+            let items = items.iter().map(convert_item_preserving).collect();
+            return Item::Mod(Box::new(convert_inline_module(module, items)));
+        }
+    }
+    // DEFENSE: files containing a static or a bare function pointer may
+    // still contain ordinary functions that can be lowered and optimized.
+    convert_item(item).unwrap_or_else(|_| Item::Raw(normalize_tokens(item.to_token_stream())))
+}
+
+/// Construct an inline module from its parsed header and lowered declarations.
+fn convert_inline_module(module: &syn::ItemMod, mut items: Vec<Item>) -> RustModule {
+    let mut outer = Vec::new();
+    let mut inner = Vec::new();
+    for attr in &module.attrs {
+        match attr.style {
+            syn::AttrStyle::Outer => outer.push(attr.clone()),
+            syn::AttrStyle::Inner(_) => inner.push(Item::Raw(attribute_to_raw_source(attr))),
+        }
+    }
+    items.splice(..0, inner);
+
+    RustModule {
+        name: module.ident.to_string(),
+        docs: extract_docs(&outer),
+        items,
+        attrs: convert_attributes(&outer),
+        vis: convert_visibility(&module.vis),
+    }
 }
 
 /// Lower a parsed item without reparsing its source text.
@@ -250,13 +295,10 @@ fn convert_item(item: &SynItem) -> syn::Result<Item> {
                 .transpose()?
                 .unwrap_or_default();
 
-            Ok(Item::Mod(Box::new(RustModule {
-                name: item_mod.ident.to_string(),
-                docs: extract_docs(&item_mod.attrs),
-                items: nested_items,
-                attrs: convert_attributes(&item_mod.attrs),
-                vis: convert_visibility(&item_mod.vis),
-            })))
+            Ok(Item::Mod(Box::new(convert_inline_module(
+                item_mod,
+                nested_items,
+            ))))
         }
         SynItem::Trait(item_trait) => Ok(Item::Raw(normalize_tokens(item_trait.to_token_stream()))),
         SynItem::Macro(item_macro) => Ok(Item::Raw(normalize_tokens(item_macro.to_token_stream()))),
@@ -428,6 +470,7 @@ fn convert_return_type(output: &ReturnType) -> syn::Result<Type> {
     }
 }
 
+/// Convert a parsed Rust type into the same model used in declarations.
 fn convert_type(ty: &SynType) -> syn::Result<Type> {
     match ty {
         SynType::Path(type_path) => {
@@ -657,13 +700,30 @@ fn convert_type_path(path: &syn::Path) -> syn::Result<Type> {
         .segments
         .last()
         .ok_or_else(|| syn::Error::new_spanned(path, "empty path"))?;
+    // DEFENSE: `Outer<T>::Item` would lose the arguments that select `Item`.
+    if let Some(segment) = path
+        .segments
+        .iter()
+        .rev()
+        .skip(1)
+        .find(|segment| !segment.arguments.is_none())
+    {
+        return Err(syn::Error::new_spanned(
+            segment,
+            "generic arguments on a non-final type path segment are unsupported",
+        ));
+    }
     let generic_args = match &last.arguments {
         PathArguments::None => Vec::new(),
         PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }) => args
             .iter()
-            .filter_map(|arg| match arg {
-                GenericArgument::Type(ty) => Some(convert_type(ty)),
-                _ => None,
+            .map(|arg| match arg {
+                GenericArgument::Type(ty) => convert_type(ty),
+                // DEFENSE: dropping `3` from `Model<3>` may select a default const.
+                _ => Err(syn::Error::new_spanned(
+                    arg,
+                    "non-type generic argument is unsupported",
+                )),
             })
             .collect::<syn::Result<Vec<_>>>()?,
         other => {
@@ -702,6 +762,7 @@ fn parse_array_len(expr: &syn::Expr) -> syn::Result<usize> {
     }
 }
 
+/// Convert a parsed body into RustLight expressions and statements.
 fn convert_block(block: &syn::Block) -> syn::Result<Block> {
     let mut stmts = Vec::new();
     let mut tail_expr = None;
@@ -709,13 +770,7 @@ fn convert_block(block: &syn::Block) -> syn::Result<Block> {
     for (index, stmt) in block.stmts.iter().enumerate() {
         match stmt {
             Stmt::Local(local) => stmts.push(convert_local(local)?),
-            Stmt::Item(item) => {
-                // Signature metadata is restored only for module/impl declarations.
-                // Keep local declarations opaque to retain lifetimes and opaque return capabilities.
-                stmts.push(Statement::Item(Box::new(Item::Raw(normalize_tokens(
-                    item.to_token_stream(),
-                )))));
-            }
+            Stmt::Item(item) => stmts.push(Statement::Item(Box::new(convert_local_item(item)))),
             Stmt::Expr(expr, semi) => {
                 if semi.is_some() || index + 1 != block.stmts.len() {
                     stmts.push(Statement::Expr(convert_expr(expr)?));
@@ -745,6 +800,75 @@ fn convert_block(block: &syn::Block) -> syn::Result<Block> {
         stmts,
         expr: tail_expr,
     })
+}
+
+fn convert_local_item(item: &SynItem) -> Item {
+    if let SynItem::Fn(function) = item {
+        if can_model_local_function(function) {
+            if let Ok(function) = convert_item(item) {
+                return function;
+            }
+        }
+    }
+    Item::Raw(normalize_tokens(item.to_token_stream()))
+}
+
+fn can_model_local_function(function: &syn::ItemFn) -> bool {
+    use syn::visit::{self, Visit};
+
+    // DEFENSE: unlike module declarations, local functions have no metadata
+    // restoration after printing. Keep their original syntax when a supported
+    // conversion would still erase qualifiers, attributes, or arguments.
+    struct Complete(bool);
+    impl<'ast> Visit<'ast> for Complete {
+        fn visit_item(&mut self, _: &'ast SynItem) {
+            // Nested items make their own conversion decision.
+        }
+
+        fn visit_attribute(&mut self, _: &'ast syn::Attribute) {
+            self.0 = false;
+        }
+
+        fn visit_generic_param(&mut self, parameter: &'ast syn::GenericParam) {
+            self.0 &= match parameter {
+                syn::GenericParam::Type(parameter) => parameter.default.is_none(),
+                syn::GenericParam::Lifetime(_) => true,
+                syn::GenericParam::Const(_) => false,
+            };
+            visit::visit_generic_param(self, parameter);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+            self.0 &= call.turbofish.is_none();
+            visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
+            self.0 &= closure.asyncness.is_none()
+                && closure.constness.is_none()
+                && closure.movability.is_none()
+                && closure.lifetimes.is_none();
+            visit::visit_expr_closure(self, closure);
+        }
+
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            self.0 &= !matches!(&local.pat, Pat::Ident(pattern) if pattern.by_ref.is_some());
+            self.visit_pat(&local.pat);
+            if let Some(init) = &local.init {
+                self.visit_local_init(init);
+            }
+        }
+    }
+
+    let signature = &function.sig;
+    let mut complete = Complete(
+        signature.constness.is_none()
+            && signature.unsafety.is_none()
+            && signature.abi.is_none()
+            && signature.variadic.is_none(),
+    );
+    complete.visit_item_fn(function);
+    complete.0
 }
 
 fn convert_local(local: &syn::Local) -> syn::Result<Statement> {
@@ -797,6 +921,7 @@ fn convert_local(local: &syn::Local) -> syn::Result<Statement> {
     }))
 }
 
+/// Convert a parsed Rust expression without reparsing its source.
 fn convert_expr(expr: &syn::Expr) -> syn::Result<Expr> {
     match expr {
         syn::Expr::Path(expr_path) => convert_expr_path(expr_path),
@@ -1079,6 +1204,7 @@ fn convert_expr_path(expr_path: &ExprPath) -> syn::Result<Expr> {
     }
 }
 
+/// Lower a named or positional member at the Rust source boundary.
 fn convert_member(member: &syn::Member) -> Member {
     match member {
         syn::Member::Named(name) => Member::Named(name.to_string()),
@@ -1101,6 +1227,7 @@ fn convert_record_field(field: &syn::FieldValue) -> syn::Result<RecordField> {
     })
 }
 
+/// Lower a parsed Rust path into namespace segments.
 fn path_segments(path: &syn::Path) -> Vec<String> {
     path.leading_colon
         .iter()

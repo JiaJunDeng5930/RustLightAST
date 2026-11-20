@@ -25,6 +25,14 @@ impl RustCodeGenerator {
         }
     }
 
+    /// Print an expression for placement at an existing source node.
+    fn generate_expression_code(&mut self, expression: &Expr) -> String {
+        self.buffer.clear();
+        self.indent_level = 0;
+        self.generate_expr(expression);
+        self.buffer.clone()
+    }
+
     // Main entry: generate full module code
     pub fn generate_module_code(&mut self, module: &RustModule) -> String {
         self.buffer.clear();
@@ -86,6 +94,13 @@ impl RustCodeGenerator {
     }
 
     fn generate_nested_module(&mut self, m: &RustModule) {
+        for doc in &m.docs {
+            self.writeln(doc);
+        }
+        for attr in &m.attrs {
+            self.generate_attribute(attr);
+        }
+
         // Generate the module declaration line
         match &m.vis {
             Visibility::Public => self.write("pub "),
@@ -97,15 +112,6 @@ impl RustCodeGenerator {
         self.writeln(&format!("mod {} {{", m.name));
         self.indent();
 
-        // Module-level docs and attributes
-        for doc in &m.docs {
-            self.writeln(doc);
-        }
-        for attr in &m.attrs {
-            self.generate_attribute(attr);
-        }
-
-        // Module contents
         self.generate_items(&m.items);
 
         self.dedent();
