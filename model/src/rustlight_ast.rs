@@ -55,6 +55,17 @@ pub enum Item {
     LazyStatic(LazyStaticDef), // lazy_static! macro
 }
 
+impl Item {
+    /// The authoritative spelling of an item that is emitted as source.
+    pub fn source_spelling(&self) -> Option<&str> {
+        match self {
+            Self::Raw(source) => Some(source),
+            Self::Retained(item) => Some(item.source()),
+            _ => None,
+        }
+    }
+}
+
 /// Struct definition
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDef {
@@ -121,6 +132,23 @@ impl FunctionDef {
             docs: Vec::new(),
             attrs: self.attrs.clone(),
         }
+    }
+}
+
+impl FunctionDef {
+    /// Documentation and declaration markers carried with this function.
+    /// Ordinary comments are printed alongside them but carry no declaration facts.
+    pub fn has_documentation(&self) -> bool {
+        self.docs.iter().any(|entry| {
+            let entry = entry.trim_start();
+            if entry.starts_with("//") {
+                entry.starts_with("//!") || entry.starts_with("///") && !entry.starts_with("////")
+            } else if entry.starts_with("/*") {
+                entry.starts_with("/*!") || entry.starts_with("/**") && !entry.starts_with("/***") && !entry.starts_with("/**/")
+            } else {
+                true
+            }
+        })
     }
 }
 
@@ -845,6 +873,22 @@ pub enum DataAttribute {
 }
 
 impl DataAttribute {
+    pub fn derive_paths(attrs: &[Self]) -> impl Iterator<Item = &[String]> {
+        attrs
+            .iter()
+            .flat_map(|attr| match attr {
+                Self::Derive { paths, .. } => paths.as_slice(),
+                Self::Other(_) => &[],
+            })
+            .map(Vec::as_slice)
+    }
+
+    /// Whether a derive was written as an unqualified name.
+    pub fn has_unqualified_derive(attrs: &[Self], name: &str) -> bool {
+        Self::derive_paths(attrs).any(|path| matches!(path, [segment] if segment == name))
+    }
+
+    /// Append a name to the last derive attribute, creating a group if needed.
     pub fn push_derive(attrs: &mut Vec<Self>, path: Vec<String>) {
         if let Some(paths) = attrs.iter_mut().rev().find_map(|attr| match attr {
             Self::Derive { paths, .. } => Some(paths),

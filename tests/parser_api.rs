@@ -122,6 +122,32 @@ fn binary_operations_keep_leading_blocks_in_statements_and_tails() {
     }
 }
 
+#[test]
+fn array_lengths_round_trip_as_expressions() {
+    let module = parse_rust_source(
+        "type Buffer = [u8; crate::CAPACITY + 1]; type Hex = [u8; 0x4usize];\n\
+         struct Buf<const N: usize>([u8; N]);",
+        "arrays",
+    )
+    .unwrap();
+    let Item::TypeAlias(buffer) = &module.items[0] else {
+        panic!("expected alias");
+    };
+    assert!(matches!(
+        &buffer.target, Type::Array(_, length) if length.array_length_value().is_none()
+    ));
+    let Item::TypeAlias(hex) = &module.items[1] else {
+        panic!("expected alias");
+    };
+    assert!(matches!(
+        &hex.target, Type::Array(_, length) if length.array_length_value() == Some(4)
+    ));
+    let printed = RustCodeGenerator::new().generate_module_code(&module);
+    assert!(printed.contains("crate::CAPACITY + 1"), "{printed}");
+    assert!(printed.contains("0x4usize"), "{printed}");
+    assert!(printed.contains("[u8; N]"), "{printed}");
+    assert_eq!(parse_rust_source(&printed, "arrays").unwrap(), module);
+}
 
 #[test]
 fn inline_module_attributes_keep_their_targets() {
@@ -431,7 +457,6 @@ fn build() {
 
     let unsupported = syn::parse_str("Opaque::<{ const { 3 } }> {}").unwrap();
     assert!(rustlightast::rustlight_parser::convert_expr(&unsupported).is_err());
-
 }
 
 #[test]
@@ -510,6 +535,55 @@ fn parameter_reassignment_retains_the_mutable_binding() {
     parse_rust_source(&printed, "roundtrip").unwrap();
 }
 
+#[test]
+fn where_bounds_on_parameters_and_instantiated_types_survive_printing() {
+    let source = r#"
+        fn describe<T: Copy, F>(value: Vec<T>, use_item: F) -> String
+        where
+            T: Clone,
+            F: for<'a> Fn(&'a T) -> Vec<T>,
+            Vec<T>: std::fmt::Debug + IntoIterator<Item = T>,
+        {
+            format!("{value:?}")
+        }
+    "#;
+    let module = parse_rust_source(source, "where_bounds").unwrap();
+    let [Item::Function(function)] = module.items.as_slice() else {
+        panic!("expected one function");
+    };
+    let item = function.generics.params[0].type_parameter().unwrap();
+    assert!(item.bounds[0].is_plain_name("Copy"));
+    assert!(function.generics.type_parameter_bounds(item).any(|bound| bound.is_plain_name("Clone")));
+    let callback = function.generics.params[1].type_parameter().unwrap();
+    let bounds = function.generics.type_parameter_bounds(callback).collect::<Vec<_>>();
+    let [TypeBound::Trait(bound)] = bounds.as_slice() else {
+        panic!("expected modeled callable bound");
+    };
+    assert_eq!(bound.higher_ranked[0].name, "'a");
+    assert!(matches!(
+        &bound.path[0].arguments,
+        TraitBoundArguments::Parenthesized { inputs, output: Some(output) }
+            if matches!(&inputs[..], [Type::Reference(inner, Some(lifetime), false)]
+                if lifetime == "'a" && matches!(inner.as_ref(), Type::Named(name) if name == "T"))
+                && matches!(output.as_ref(), Type::Generic(name, _) if name == "Vec")
+    ));
+    let predicates = function.generics.non_parameter_where_predicates().collect::<Vec<_>>();
+    let [WherePredicate::Type { bounds, .. }] = predicates.as_slice()
+    else {
+        panic!("expected one where predicate");
+    };
+    assert!(matches!(&bounds[1], TypeBound::Trait(bound)
+        if matches!(&bound.path[0].arguments, TraitBoundArguments::Angle(arguments)
+            if matches!(&arguments[..], [TraitBoundArgument::AssociatedType { name, value: Type::Named(value), .. }]
+                if name == "Item" && value == "T"))));
+    let printed = RustCodeGenerator::new().generate_module_code(&module);
+    assert!(printed.contains("T: Clone"));
+    assert!(printed.contains("F: for<'a> Fn(&'a T) -> Vec<T>"));
+    assert!(printed.contains("Vec<T>: std::fmt::Debug"));
+    assert_eq!(parse_rust_source(&printed, "where_bounds").unwrap(), module);
+    assert!(printed.contains("IntoIterator<Item = T>"));
+    parse_rust_source(&printed, "roundtrip").unwrap();
+}
 
 #[test]
 fn iterator_opaque_types_keep_the_associated_item_type() {
@@ -639,7 +713,7 @@ fn adding_a_derive_keeps_existing_names_in_their_attribute_groups() {
     use quote::ToTokens;
     use rustlightast::DataAttribute;
 
-    let source = "#[derive(Clone)] #[repr(C)] #[derive(Debug,)] #[allow(dead_code)] struct S;";
+    let source = "#[derive(Clone)] #[repr(C)] #[derive(::core::fmt::Debug,)] #[allow(dead_code)] struct S;";
     let mut module = parse_rust_source(source, "derive_order").unwrap();
     let Item::Struct(item) = &mut module.items[0] else {
         panic!("expected structure");
@@ -649,7 +723,7 @@ fn adding_a_derive_keeps_existing_names_in_their_attribute_groups() {
     let printed = RustCodeGenerator::new().generate_module_code(&module);
     let actual = syn::parse_str::<syn::ItemStruct>(&printed).unwrap();
     let expected = syn::parse_str::<syn::ItemStruct>(
-        "#[derive(Clone)] #[repr(C)] #[derive(Debug, Copy,)] #[allow(dead_code)] struct S;",
+        "#[derive(Clone)] #[repr(C)] #[derive(::core::fmt::Debug, Copy,)] #[allow(dead_code)] struct S;",
     )
     .unwrap();
     assert_eq!(

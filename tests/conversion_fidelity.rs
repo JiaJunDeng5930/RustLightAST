@@ -10,6 +10,20 @@ fn parse_and_print(source: &str) -> (RustModule, String) {
     (module, printed)
 }
 
+#[test]
+fn function_parameter_patterns_survive_conversion_and_printing() {
+    let (module, printed) = parse_and_print(
+        "struct Pair(u8, u8); fn combine(Pair(a, mut b): Pair, (c, _): (u8, u8), mut d: u8) -> u8 { a + b + c + d }",
+    );
+    let Item::Function(function) = &module.items[1] else { panic!("missing function") };
+    assert!(matches!(function.params[0].pattern, Some(Pattern::TupleStruct { .. })));
+    assert!(matches!(function.params[1].pattern, Some(Pattern::Tuple(_))));
+    assert_eq!(function.params[1].binding_name(), None);
+    assert_eq!(function.params[2].binding_name(), Some("d"));
+    assert!(function.params[2].mutable);
+    let (round_trip, _) = parse_and_print(&printed);
+    assert_eq!(round_trip, module);
+}
 
 #[test]
 fn function_qualifiers_and_local_generics_survive_conversion() {
@@ -72,6 +86,90 @@ fn conversion_errors_reach_the_file_boundary() {
     }
 }
 
+#[test]
+fn parses_rec_get_sample_and_prints_it() {
+    let source = r#"
+use crate::Int::*;
+
+#[derive(Clone)]
+pub enum Num {
+One,
+Bit0(Box<Num>),
+Bit1(Box<Num>),
+}
+
+#[derive(Clone)]
+pub enum Int {
+ZeroInt,
+Pos(Num),
+Neg(Num),
+}
+
+#[derive(Clone)]
+pub enum Option {
+None,
+Some(Int),
+Rec(Box<Option>),
+}
+
+pub fn get(x0: Option) -> Int {
+match x0 {
+    Option::Some(x) => x.clone(),
+    Option::None => Int::ZeroInt,
+    Option::Rec(p0) => {
+        let op = *p0;
+        get(op.clone())
+    },
+}
+}
+"#;
+    let (module, printed) = parse_and_print(source);
+    let [Item::Use(_), Item::Enum(num), Item::Enum(_), Item::Enum(_), Item::Function(get)] =
+        module.items.as_slice()
+    else {
+        panic!("expected the import, three enums and the modeled function");
+    };
+    assert!(DataAttribute::has_unqualified_derive(&num.attrs, "Clone"));
+    let Fields::Tuple(fields) = &num.variants[1].fields else {
+        panic!("expected tuple variant");
+    };
+    assert!(matches!(&fields[0].ty, Type::Generic(name, args)
+        if name == "Box" && matches!(args.as_slice(), [GenericArgument::Type(Type::Named(name))] if name == "Num")));
+
+    let Some(Expr::Match { expr, arms }) = get.body.expr.as_deref() else {
+        panic!("expected a modeled match");
+    };
+    assert!(matches!(expr.as_ref(), Expr::Ident(name) if name == "x0"));
+    let [_, _, recursive] = arms.as_slice() else {
+        panic!("expected three match arms");
+    };
+    assert!(
+        matches!(&recursive.pattern, Pattern::TupleStruct { path, fields }
+        if path.segments == ["Option", "Rec"] && path.arguments.is_empty() && matches!(fields.as_slice(),
+            [Pattern::Ident { name, .. }] if name == "p0"))
+    );
+    let [Statement::Let(binding)] = recursive.body.stmts.as_slice() else {
+        panic!("expected a binding for the recursive field");
+    };
+    assert_eq!(binding.pattern.plain_binding_name(), Some("op"));
+    assert!(matches!(&binding.init, Some(Expr::UnaryOp(op, inner))
+        if op == "*" && matches!(inner.as_ref(), Expr::Ident(name) if name == "p0")));
+    let Some(Expr::Call(callee, args)) = recursive.body.expr.as_deref() else {
+        panic!("expected a recursive call");
+    };
+    assert!(matches!(callee.as_ref(), Expr::Ident(name) if name == "get"));
+    assert!(
+        matches!(args.as_slice(), [Expr::MethodCall(receiver, method, args)]
+        if method.is_plain("clone") && args.is_empty()
+            && matches!(receiver.as_ref(), Expr::Ident(name) if name == "op"))
+    );
+
+    assert!(printed.contains("enum Num"));
+    assert!(printed.contains("pub fn get(x0: Option) -> Int"));
+    assert!(printed.contains("Option::Rec(p0) => {"));
+    assert!(printed.contains("let op = *p0;"));
+    assert!(printed.contains("get(op.clone())"));
+}
 
 #[test]
 fn preserves_expression_macros_as_opaque_rust() {
@@ -109,6 +207,67 @@ pub fn bytes(x: u8) -> [u8; 3] {
     syn::parse_file(&printed).expect("printed array remains valid Rust");
 }
 
+#[test]
+fn preserves_literal_spelling_and_escaping() {
+    let source = r##"
+pub fn shift(x: u64) -> u64 {
+    x << 1usize
+}
+
+pub fn escaped() {
+    let _s = "line\n\"quoted\"";
+    let _c = '\n';
+}
+
+pub fn hexadecimal() -> u16 { 0xff_u16 }
+pub fn byte() -> u8 { b'\x41' }
+pub fn float() -> f32 { 1.25e+1_f32 }
+"##;
+    let (module, printed) = parse_and_print(source);
+
+    assert!(printed.contains("1usize"));
+    assert!(printed.contains("0xff_u16"));
+    assert!(printed.contains(r#""line\n\"quoted\"""#));
+    assert!(printed.contains(r"'\n'"));
+    let Item::Function(escaped) = &module.items[1] else {
+        panic!("expected a modeled function containing escaped literals");
+    };
+    let rustlightast::Statement::Let(character) = &escaped.body.stmts[1] else {
+        panic!("expected a modeled character binding");
+    };
+    assert_eq!(
+        character.init.as_ref(),
+        Some(&Expr::Literal(Literal::CharToken { spelling: r"'\n'".into(), value: '\n' })),
+    );
+    let Item::Function(hexadecimal) = &module.items[2] else {
+        panic!("expected a modeled hexadecimal function");
+    };
+    let Some(Expr::Literal(literal @ Literal::Integer { digits, suffix })) =
+        hexadecimal.body.expr.as_deref()
+    else {
+        panic!("expected a modeled integer literal");
+    };
+    assert_eq!(digits, "0xff_");
+    assert_eq!(suffix.as_deref(), Some("u16"));
+    assert_eq!(literal.integer_value(), Some(255));
+    let Item::Function(byte) = &module.items[3] else {
+        panic!("expected a modeled byte function");
+    };
+    assert_eq!(
+        byte.body.expr.as_deref(),
+        Some(&Expr::Literal(Literal::Byte { spelling: r"b'\x41'".into(), value: 65 })),
+    );
+    let Item::Function(float) = &module.items[4] else {
+        panic!("expected a modeled float function");
+    };
+    assert_eq!(
+        float.body.expr.as_deref(),
+        Some(&Expr::Literal(Literal::FloatToken { digits: "1.25e+1_".into(), suffix: Some("f32".into()) })),
+    );
+    assert!(printed.contains(r"b'\x41'"));
+    assert!(printed.contains("1.25e+1_f32"));
+    syn::parse_file(&printed).expect("printed literals remain valid Rust");
+}
 
 #[test]
 fn preserves_qualified_self_paths() {
@@ -150,6 +309,35 @@ fn values() -> (usize, usize) {
     }
 }
 
+#[test]
+fn preserves_type_paths_bounds_and_grouping() {
+    let source = r#"
+type Assoc<T> = <T as ::Traits::Make<u8>>::Item<'static>;
+type Selected<T> = Model<T>::Item;
+type Object<'a> = &'a (dyn ::std::fmt::Debug + Send + 'a);
+type Callable = dyn Fn(u8);
+type Macro = opaque_type!(u8);
+fn produces() -> impl Send + Sync { () }
+"#;
+    let (module, printed) = parse_and_print(source);
+    let alias = |index| match &module.items[index] {
+        Item::TypeAlias(alias) => &alias.target,
+        other => panic!("expected a modeled alias, got {other:?}"),
+    };
+    assert!(matches!(alias(0), Type::AssociatedPath(path, qualification)
+        if path == &["Item"] && qualification.trait_arguments[0].segment == 2));
+    assert!(matches!(alias(1), Type::PathWithArguments(path, arguments)
+        if path == &["Model", "Item"] && arguments[0].segment == 0));
+    assert!(matches!(alias(2), Type::Reference(target, _, false)
+        if matches!(target.as_ref(), Type::Parenthesized(inner)
+            if matches!(inner.as_ref(), Type::TraitObject { dyn_token: true, bounds } if bounds.len() == 3))));
+    assert!(matches!(alias(3), Type::CallableTrait(callable) if !callable.explicit_return_type));
+    assert!(matches!(alias(4), Type::Macro(mac) if mac.path == ["opaque_type"]));
+    assert!(matches!(&module.items[5], Item::Function(function)
+        if matches!(&function.return_type, Type::ImplTraitBounds(bounds) if bounds.len() == 2)));
+    let (reparsed, _) = parse_and_print(&printed);
+    assert_eq!(module.items, reparsed.items);
+}
 #[test]
 fn roundtrips_lifetime_type_and_const_arguments() {
     let source = r#"
@@ -209,36 +397,6 @@ pub fn run(value: &u8) -> (u8, i32, i32) {
     }
     let (_, reprinted) = parse_and_print(&printed);
     assert_eq!(printed, reprinted);
-}
-
-#[test]
-fn preserves_type_paths_bounds_and_grouping() {
-    let source = r#"
-type Assoc<T> = <T as ::Traits::Make<u8>>::Item<'static>;
-type Selected<T> = Model<T>::Item;
-type Object<'a> = &'a (dyn ::std::fmt::Debug + Send + 'a);
-type Callable = dyn Fn(u8);
-type Macro = opaque_type!(u8);
-fn produces() -> impl Send + Sync { () }
-"#;
-    let (module, printed) = parse_and_print(source);
-    let alias = |index| match &module.items[index] {
-        Item::TypeAlias(alias) => &alias.target,
-        other => panic!("expected a modeled alias, got {other:?}"),
-    };
-    assert!(matches!(alias(0), Type::AssociatedPath(path, qualification)
-        if path == &["Item"] && qualification.trait_arguments[0].segment == 2));
-    assert!(matches!(alias(1), Type::PathWithArguments(path, arguments)
-        if path == &["Model", "Item"] && arguments[0].segment == 0));
-    assert!(matches!(alias(2), Type::Reference(target, _, false)
-        if matches!(target.as_ref(), Type::Parenthesized(inner)
-            if matches!(inner.as_ref(), Type::TraitObject { dyn_token: true, bounds } if bounds.len() == 3))));
-    assert!(matches!(alias(3), Type::CallableTrait(callable) if !callable.explicit_return_type));
-    assert!(matches!(alias(4), Type::Macro(mac) if mac.path == ["opaque_type"]));
-    assert!(matches!(&module.items[5], Item::Function(function)
-        if matches!(&function.return_type, Type::ImplTraitBounds(bounds) if bounds.len() == 2)));
-    let (reparsed, _) = parse_and_print(&printed);
-    assert_eq!(module.items, reparsed.items);
 }
 
 #[test]

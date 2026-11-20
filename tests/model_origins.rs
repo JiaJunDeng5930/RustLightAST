@@ -81,6 +81,65 @@ fn occurrences_nest_in_local_functions_and_macro_inputs() {
     assert!(within(&second.node, &second_ty.node));
 }
 
+#[test]
+fn source_occurrences_stay_distinct_in_shorthand_fields_and_macros() {
+    use rustlightast::rustlight_parser::model_origins::ModelNodeOrigin;
+    use rustlightast::Pattern;
+
+    let source = r#"
+        fn update(point: Point, name: i32) {
+            let Point { name, .. } = point;
+            let _ = Point { name, other: name };
+            let _ = format!("{}", name);
+            #[allow(unused)]
+            emit!(name);
+        }
+    "#;
+    let parsed = ParsedSourceFile::parse(source).unwrap();
+
+    #[derive(Default)]
+    struct Origins {
+        reads: Vec<ModelNodeOrigin>,
+        binding: Option<ModelNodeOrigin>,
+        macros: Vec<MacroOrigin>,
+    }
+
+    impl ModelOriginVisitor<'_> for Origins {
+        fn unmatched(&mut self) {
+            panic!("origin events must cover the original model");
+        }
+
+        fn expression(&mut self, expression: &Expr, origin: ExpressionOrigin) {
+            if matches!(expression, Expr::Ident(name) if name == "name") {
+                self.reads.push(origin.node);
+            }
+        }
+
+        fn pattern(&mut self, pattern: &Pattern, origin: ModelNodeOrigin) {
+            if pattern.binding_name() == Some("name") {
+                self.binding.get_or_insert(origin);
+            }
+        }
+
+        fn macro_invocation(&mut self, _: &MacroInvocation, origin: MacroOrigin) {
+            self.macros.push(origin);
+        }
+    }
+
+    let mut origins = Origins::default();
+    parsed.visit_original_origins(&mut origins);
+    let binding = origins.binding.unwrap();
+    let reads: Vec<_> = origins.reads.iter().map(|origin| origin.source_address).collect();
+    assert_eq!(reads.len(), 4);
+    assert!(reads.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(binding.subtree_end <= reads[0]);
+    let [format, emit] = origins.macros.as_slice() else {
+        panic!("expected two macro invocations");
+    };
+    assert!((format.node.source_address..format.node.subtree_end).contains(&reads[2]));
+    assert!((emit.node.source_address..emit.node.subtree_end).contains(&reads[3]));
+    assert!(emit.has_attributes);
+}
 
 #[test]
 fn exact_clone_transfers_occurrence_ids_before_editing() {
