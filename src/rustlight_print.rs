@@ -1252,6 +1252,12 @@ impl RustCodeGenerator {
     fn generate_literal(&mut self, lit: &Literal) {
         match lit {
             Literal::Raw(source) => self.write(source),
+            Literal::Integer { digits, suffix } => {
+                self.write(digits);
+                if let Some(suffix) = suffix {
+                    self.write(suffix);
+                }
+            }
             Literal::Int(i) => self.write(&i.to_string()),
             Literal::Float(f) => self.write(&f.to_string()),
             Literal::Str(s) => self.write(&format!("\"{}\"", s)),

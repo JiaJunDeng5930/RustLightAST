@@ -517,6 +517,11 @@ pub enum Literal {
     /// Literal source preserved verbatim when its spelling carries Rust type or
     /// escaping information that must survive a parse/print round trip.
     Raw(String),
+    /// An integer token with its radix, separators and optional type suffix.
+    Integer {
+        digits: String,
+        suffix: Option<String>,
+    },
     Int(i64),
     Float(f64),
     Str(String),

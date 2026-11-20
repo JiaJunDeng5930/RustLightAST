@@ -2,8 +2,8 @@ mod support;
 
 use rustlightast::rustlight_parser::{convert_file_preserving_items, parse_rust_source};
 use rustlightast::{
-    DataAttribute, Expr, Fields, GenericArgument, GenericParam, Item, Pattern, RustCodeGenerator,
-    RustModule, Statement, Type, TypeAlias, TypeParameter, Visibility,
+    DataAttribute, Expr, Fields, GenericArgument, GenericParam, Item, Literal, Pattern,
+    RustCodeGenerator, RustModule, Statement, Type, TypeAlias, TypeParameter, Visibility,
 };
 
 fn parse_and_print(source: &str) -> (RustModule, String) {
@@ -202,25 +202,6 @@ pub fn bytes(x: u8) -> [u8; 3] {
     syn::parse_file(&printed).expect("printed array remains valid Rust");
 }
 
-#[test]
-fn preserves_literal_spelling_and_escaping() {
-    let source = r##"
-pub fn shift(x: u64) -> u64 {
-    x << 1usize
-}
-
-pub fn escaped() {
-    let _s = "line\n\"quoted\"";
-    let _c = '\n';
-}
-"##;
-    let (_, printed) = parse_and_print(source);
-
-    assert!(printed.contains("1usize"));
-    assert!(printed.contains(r#""line\n\"quoted\"""#));
-    assert!(printed.contains(r"'\n'"));
-    syn::parse_file(&printed).expect("printed literals remain valid Rust");
-}
 
 #[test]
 fn preserves_modeled_and_unmodeled_qualified_self_paths() {

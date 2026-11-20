@@ -1584,6 +1584,14 @@ fn convert_range(range: &syn::ExprRange) -> syn::Result<(Option<Box<Expr>>, crat
 fn convert_literal(lit: &Lit) -> syn::Result<Literal> {
     match lit {
         Lit::Bool(bool_lit) => Ok(Literal::Bool(bool_lit.value)),
+        Lit::Int(integer) => {
+            let token = integer.to_string();
+            let suffix = integer.suffix();
+            Ok(Literal::Integer {
+                digits: token[..token.len() - suffix.len()].to_owned(),
+                suffix: (!suffix.is_empty()).then(|| suffix.to_owned()),
+            })
+        }
         other => Ok(Literal::Raw(other.to_token_stream().to_string())),
     }
 }
