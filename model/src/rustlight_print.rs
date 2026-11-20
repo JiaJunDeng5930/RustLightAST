@@ -200,6 +200,16 @@ impl RustCodeGenerator {
         self.buffer.clone()
     }
 
+    /// Measure the module's printed size without allocating the output text.
+    pub fn measure_module_code(module: &RustModule) -> usize {
+        let mut generator = Self {
+            measurement: Some(ModuleMeasurement::default()),
+            ..Self::new()
+        };
+        generator.generate_module(module);
+        generator.measurement.unwrap().bytes
+    }
+
     fn generate_module(&mut self, module: &RustModule) {
         for doc in &module.docs {
             self.writeln(doc);
@@ -1644,7 +1654,7 @@ impl RustCodeGenerator {
     }
 
     /// Print a derive attribute for publication at its source range.
-    pub(crate) fn generate_derive_attribute_code(paths: &[Vec<String>], trailing_comma: bool) -> String {
+    pub fn generate_derive_attribute_code(paths: &[Vec<String>], trailing_comma: bool) -> String {
         let names = paths.iter().map(|path| path.join("::")).collect::<Vec<_>>();
         let suffix = if trailing_comma && !paths.is_empty() { "," } else { "" };
         format!("#[derive({}{suffix})]", names.join(", "))
@@ -1787,7 +1797,7 @@ impl RustCodeGenerator {
     }
 
     /// Print a generic type bound at the source boundary.
-    pub(crate) fn generate_type_bound_code(&self, bound: &TypeBound) -> String {
+    pub fn generate_type_bound_code(&self, bound: &TypeBound) -> String {
         let trait_bound = match bound {
             TypeBound::Lifetime(source) | TypeBound::Opaque(source) => return source.clone(),
             TypeBound::Trait(bound) => bound,
