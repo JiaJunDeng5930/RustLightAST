@@ -2,7 +2,7 @@ mod support;
 
 use rustlightast::{
     parse_rust_source, parse_rust_type_facts,
-    rustlight_parser::{first_explicit_type_argument, TYPE_FACT_ONLY_DOC},
+    rustlight_parser::TYPE_FACT_ONLY_DOC,
     Expr, GenericArgument, Item, Member, ParseError, RustCodeGenerator, Statement,
     TraitBoundArgument, TraitBoundArguments, Type, TypeBound, WherePredicate,
 };
@@ -105,16 +105,6 @@ fn binary_operations_keep_leading_blocks_in_statements_and_tails() {
 
 
 #[test]
-fn optimizer_type_argument_helper_remains_available() {
-    assert!(
-        matches!(first_explicit_type_argument("identity::<u32, bool>"),
-        Some(Type::Named(name)) if name == "u32")
-    );
-    assert!(first_explicit_type_argument("identity").is_none());
-    assert!(first_explicit_type_argument("identity::<").is_none());
-}
-
-#[test]
 fn inline_module_attributes_keep_their_targets() {
     let source = r#"
 #[cfg(test)] mod tests {
@@ -144,6 +134,32 @@ fn inline_module_attributes_keep_their_targets() {
         };
         assert!(import.attrs.is_empty());
     }
+}
+
+#[test]
+fn use_tree_preserves_groups_renames_and_globs() {
+    use rustlightast::{Item, UseTree};
+
+    let source = "use ::outer::{self, nested::{Thing as Local, *}};";
+    let module = parse_rust_source(source, "imports").unwrap();
+    let [Item::Use(import)] = module.items.as_slice() else {
+        panic!("expected a use declaration");
+    };
+    assert!(import.absolute);
+    let UseTree::Path { segment, tree } = &import.tree else {
+        panic!("expected the outer path");
+    };
+    assert_eq!(segment, "outer");
+    let UseTree::Group(entries) = tree.as_ref() else {
+        panic!("expected a group");
+    };
+    assert!(matches!(&entries[0], UseTree::Name(name) if name == "self"));
+    assert!(matches!(&entries[1], UseTree::Path { segment, tree }
+        if segment == "nested" && matches!(tree.as_ref(), UseTree::Group(children)
+            if matches!(children.as_slice(), [UseTree::Rename { name, alias }, UseTree::Glob]
+                if name == "Thing" && alias == "Local"))));
+    let printed = RustCodeGenerator::new().generate_module_code(&module);
+    assert_eq!(parse_rust_source(&printed, "imports").unwrap(), module);
 }
 
 #[test]

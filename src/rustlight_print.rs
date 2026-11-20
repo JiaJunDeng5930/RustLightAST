@@ -1337,13 +1337,33 @@ impl RustCodeGenerator {
         if import.absolute {
             self.write("::");
         }
-        self.write(&import.path.join("::"));
-        let separator = if import.path.is_empty() { "" } else { "::" };
-        match &import.kind {
-            UseKind::Simple => self.writeln(";"),
-            UseKind::Glob => self.writeln(&format!("{separator}*;")),
-            UseKind::Nested(items) => {
-                self.writeln(&format!("{separator}{{{}}};", items.join(", ")));
+        self.write_use_tree(&import.tree);
+        self.writeln(";");
+    }
+
+    fn write_use_tree(&mut self, tree: &UseTree) {
+        match tree {
+            UseTree::Path { segment, tree } => {
+                self.write(segment);
+                self.write("::");
+                self.write_use_tree(tree);
+            }
+            UseTree::Name(name) => self.write(name),
+            UseTree::Rename { name, alias } => {
+                self.write(name);
+                self.write(" as ");
+                self.write(alias);
+            }
+            UseTree::Glob => self.write("*"),
+            UseTree::Group(items) => {
+                self.write("{");
+                for (index, item) in items.iter().enumerate() {
+                    if index != 0 {
+                        self.write(", ");
+                    }
+                    self.write_use_tree(item);
+                }
+                self.write("}");
             }
         }
     }
@@ -1802,7 +1822,11 @@ fn should_separate_after_use(item: &Item, next: Option<&Item>) -> bool {
 }
 
 fn use_root(use_stmt: &UseStatement) -> Option<&str> {
-    use_stmt.path.first().map(String::as_str)
+    match &use_stmt.tree {
+        UseTree::Path { segment, .. } => Some(segment),
+        UseTree::Name(name) | UseTree::Rename { name, .. } => Some(name),
+        UseTree::Group(_) | UseTree::Glob => None,
+    }
 }
 
 fn callable_bound_to_string(bound: &CallableBound) -> String {

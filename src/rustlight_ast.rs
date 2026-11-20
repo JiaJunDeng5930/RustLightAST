@@ -947,8 +947,7 @@ pub struct ModuleDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UseStatement {
-    pub path: Vec<String>,
-    pub kind: UseKind,
+    pub tree: UseTree,
     pub absolute: bool,
     pub vis: Visibility,
     /// Outer attributes in declaration order, including doc attributes.
@@ -956,10 +955,12 @@ pub struct UseStatement {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum UseKind {
-    Simple,
-    Glob,                // {path}::*
-    Nested(Vec<String>), // {path}::{a, b}
+pub enum UseTree {
+    Path { segment: String, tree: Box<UseTree> },
+    Name(String),
+    Rename { name: String, alias: String },
+    Glob,
+    Group(Vec<UseTree>),
 }
 
 /// lazy_static! macro definition

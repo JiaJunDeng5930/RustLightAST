@@ -26,7 +26,7 @@ use crate::{
     FunctionQualifiers, GenericArgument, GenericParam, Generics, ImplBlock, ImplItem, Item,
     LetStmt, LifetimeParameter, Literal, MatchArm, Member, ModuleDecl, Param, PathType,
     RecordField, RecordPath, RustModule, Statement, StructDef, Type, TypeAlias, TypeParameter,
-    UnionDef, UseKind, UseStatement, Variant, Visibility, WherePredicate,
+    UnionDef, UseStatement, UseTree, Variant, Visibility, WherePredicate,
 };
 
 /// Marker attached to recovered function signatures with synthetic empty bodies.
@@ -505,39 +505,27 @@ fn convert_impl_item(item: &SynImplItem) -> syn::Result<ImplItem> {
 }
 
 fn convert_use(item: &syn::ItemUse) -> UseStatement {
-    let mut path = Vec::new();
-    let kind = convert_use_tree(&item.tree, &mut path);
     UseStatement {
-        path,
-        kind,
+        tree: convert_use_tree(&item.tree),
         absolute: item.leading_colon.is_some(),
         vis: convert_visibility(&item.vis),
         attrs: item.attrs.iter().map(attribute_to_raw_source).collect(),
     }
 }
 
-fn convert_use_tree(tree: &syn::UseTree, segments: &mut Vec<String>) -> UseKind {
+fn convert_use_tree(tree: &syn::UseTree) -> UseTree {
     match tree {
-        syn::UseTree::Path(path) => {
-            segments.push(path.ident.to_string());
-            convert_use_tree(&path.tree, segments)
-        }
-        syn::UseTree::Name(name) => {
-            segments.push(name.ident.to_string());
-            UseKind::Simple
-        }
-        syn::UseTree::Glob(_) => UseKind::Glob,
-        syn::UseTree::Group(group) => UseKind::Nested(
-            group
-                .items
-                .iter()
-                .map(|tree| normalize_tokens(tree.to_token_stream()))
-                .collect(),
-        ),
-        syn::UseTree::Rename(rename) => {
-            segments.push(format!("{} as {}", rename.ident, rename.rename));
-            UseKind::Simple
-        }
+        syn::UseTree::Path(path) => UseTree::Path {
+            segment: path.ident.to_string(),
+            tree: Box::new(convert_use_tree(&path.tree)),
+        },
+        syn::UseTree::Name(name) => UseTree::Name(name.ident.to_string()),
+        syn::UseTree::Glob(_) => UseTree::Glob,
+        syn::UseTree::Group(group) => UseTree::Group(group.items.iter().map(convert_use_tree).collect()),
+        syn::UseTree::Rename(rename) => UseTree::Rename {
+            name: rename.ident.to_string(),
+            alias: rename.rename.to_string(),
+        },
     }
 }
 
@@ -1508,20 +1496,6 @@ fn path_segment_source(segment: &syn::PathSegment) -> String {
         PathArguments::None => segment.ident.to_string(),
         _ => normalize_path_tokens(segment.to_token_stream()),
     }
-}
-
-/// Recover the first supported type argument from a textual path segment,
-/// such as `identity::<u32>`. Returns `None` for invalid or unsupported input.
-pub fn first_explicit_type_argument(segment: &str) -> Option<Type> {
-    let path = syn::parse_str::<syn::Path>(segment).ok()?;
-    let last = path.segments.last()?;
-    let PathArguments::AngleBracketed(arguments) = &last.arguments else {
-        return None;
-    };
-    arguments.args.iter().find_map(|argument| match argument {
-        SynGenericArgument::Type(ty) => convert_type(ty).ok(),
-        _ => None,
-    })
 }
 
 fn convert_range(range: &syn::ExprRange) -> syn::Result<(Option<Box<Expr>>, crate::RangeEnd)> {
