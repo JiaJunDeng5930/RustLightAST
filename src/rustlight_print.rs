@@ -795,12 +795,17 @@ impl RustCodeGenerator {
                 self.write(")");
             }
             Expr::MethodCall(receiver, method, args) => {
-                if method.is_empty() {
+                if method.name.is_empty() {
                     self.generate_callee(receiver, position);
                 } else {
                     self.generate_postfix_base(receiver, position);
                     self.write(".");
-                    self.write(method);
+                    self.write(&method.name);
+                    if let Some(arguments) = &method.generic_arguments {
+                        let mut turbofish = "::".to_owned();
+                        self.append_generic_arguments(&mut turbofish, arguments);
+                        self.write(&turbofish);
+                    }
                 }
                 self.write("(");
                 for (i, arg) in args.iter().enumerate() {

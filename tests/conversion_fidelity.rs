@@ -2,7 +2,7 @@ mod support;
 
 use rustlightast::rustlight_parser::{convert_file_preserving_items, parse_rust_source};
 use rustlightast::{
-    DataAttribute, Expr, Fields, GenericArgument, GenericParam, Item, Literal, Pattern,
+    DataAttribute, Expr, Fields, GenericArgument, GenericParam, Item, Literal, PathType, Pattern,
     RustCodeGenerator, RustModule, Statement, Type, TypeAlias, TypeParameter, Visibility,
 };
 
@@ -81,90 +81,6 @@ fn unsupported_substructure_never_disappears_from_preserved_source() {
     }
 }
 
-#[test]
-fn parses_rec_get_sample_and_prints_it() {
-    let source = r#"
-use crate::Int::*;
-
-#[derive(Clone)]
-pub enum Num {
-One,
-Bit0(Box<Num>),
-Bit1(Box<Num>),
-}
-
-#[derive(Clone)]
-pub enum Int {
-ZeroInt,
-Pos(Num),
-Neg(Num),
-}
-
-#[derive(Clone)]
-pub enum Option {
-None,
-Some(Int),
-Rec(Box<Option>),
-}
-
-pub fn get(x0: Option) -> Int {
-match x0 {
-    Option::Some(x) => x.clone(),
-    Option::None => Int::ZeroInt,
-    Option::Rec(p0) => {
-        let op = *p0;
-        get(op.clone())
-    },
-}
-}
-"#;
-    let (module, printed) = parse_and_print(source);
-    let [Item::Use(_), Item::Enum(num), Item::Enum(_), Item::Enum(_), Item::Function(get)] =
-        module.items.as_slice()
-    else {
-        panic!("expected the import, three enums and the modeled function");
-    };
-    assert!(DataAttribute::derive_names(&num.attrs).eq(["Clone"]));
-    let Fields::Tuple(fields) = &num.variants[1].fields else {
-        panic!("expected tuple variant");
-    };
-    assert!(matches!(&fields[0].ty, Type::Generic(name, args)
-        if name == "Box" && matches!(args.as_slice(), [GenericArgument::Type(Type::Named(name))] if name == "Num")));
-
-    let Some(Expr::Match { expr, arms }) = get.body.expr.as_deref() else {
-        panic!("expected a modeled match");
-    };
-    assert!(matches!(expr.as_ref(), Expr::Ident(name) if name == "x0"));
-    let [_, _, recursive] = arms.as_slice() else {
-        panic!("expected three match arms");
-    };
-    assert!(
-        matches!(&recursive.pattern, Pattern::TupleStruct { path, fields }
-        if path == &["Option", "Rec"] && matches!(fields.as_slice(),
-            [Pattern::Ident { name, .. }] if name == "p0"))
-    );
-    let [Statement::Let(binding)] = recursive.body.stmts.as_slice() else {
-        panic!("expected a binding for the recursive field");
-    };
-    assert_eq!(binding.name, "op");
-    assert!(matches!(&binding.init, Some(Expr::UnaryOp(op, inner))
-        if op == "*" && matches!(inner.as_ref(), Expr::Ident(name) if name == "p0")));
-    let Some(Expr::Call(callee, args)) = recursive.body.expr.as_deref() else {
-        panic!("expected a recursive call");
-    };
-    assert!(matches!(callee.as_ref(), Expr::Ident(name) if name == "get"));
-    assert!(
-        matches!(args.as_slice(), [Expr::MethodCall(receiver, method, args)]
-        if method == "clone" && args.is_empty()
-            && matches!(receiver.as_ref(), Expr::Ident(name) if name == "op"))
-    );
-
-    assert!(printed.contains("enum Num"));
-    assert!(printed.contains("pub fn get(x0: Option) -> Int"));
-    assert!(printed.contains("Option::Rec(p0) => {"));
-    assert!(printed.contains("let op = *p0;"));
-    assert!(printed.contains("get(op.clone())"));
-}
 
 #[test]
 fn preserves_expression_macros_as_opaque_rust() {

@@ -849,21 +849,25 @@ fn convert_generic_arguments(
     arguments
         .args
         .iter()
-        .map(|argument| match argument {
-            SynGenericArgument::Type(ty) => convert_type(ty).map(GenericArgument::Type),
-            SynGenericArgument::Lifetime(lifetime) => {
-                Ok(GenericArgument::Lifetime(lifetime.to_string()))
-            }
-            SynGenericArgument::Const(expr) => {
-                Ok(GenericArgument::Const(Box::new(convert_expr(expr)?)))
-            }
-            // DEFENSE: dropping an associated type equality or constraint changes the type.
-            _ => Err(syn::Error::new_spanned(
-                argument,
-                "unsupported associated generic argument",
-            )),
-        })
+        .map(convert_generic_argument)
         .collect()
+}
+
+fn convert_generic_argument(argument: &SynGenericArgument) -> syn::Result<GenericArgument> {
+    match argument {
+        SynGenericArgument::Type(ty) => convert_type(ty).map(GenericArgument::Type),
+        SynGenericArgument::Lifetime(lifetime) => {
+            Ok(GenericArgument::Lifetime(lifetime.to_string()))
+        }
+        SynGenericArgument::Const(expr) => {
+            Ok(GenericArgument::Const(Box::new(convert_expr(expr)?)))
+        }
+        // DEFENSE: dropping an associated type equality or constraint changes the type.
+        _ => Err(syn::Error::new_spanned(
+            argument,
+            "unsupported associated generic argument",
+        )),
+    }
 }
 
 fn convert_type_path(path: &syn::Path) -> syn::Result<Type> {
@@ -1045,10 +1049,10 @@ fn convert_expr(expr: &syn::Expr) -> syn::Result<Expr> {
             args,
             ..
         }) if attrs.is_empty() => {
-            let method = turbofish.as_ref().map_or_else(
-                || method.to_string(),
-                |arguments| format!("{method}{}", normalize_tokens(arguments.to_token_stream())),
-            );
+            let method = crate::MethodName {
+                name: method.to_string(),
+                generic_arguments: turbofish.as_ref().map(convert_generic_arguments).transpose()?,
+            };
             Ok(Expr::MethodCall(
                 Box::new(convert_expr(receiver)?),
                 method,
@@ -1443,10 +1447,7 @@ fn convert_expr_path(expr_path: &ExprPath) -> syn::Result<Expr> {
     }
 }
 
-/// Project modeled arguments on expression path segments.
-///
-/// A terminal turbofish with only type arguments, including nested lists,
-/// retains its path spelling for callers that resolve names using that spelling.
+/// Project modeled arguments on expression path segments, including terminal turbofish.
 fn namespace_type_arguments(path: &syn::Path) -> Vec<crate::PathTypeArguments> {
     let root = usize::from(path.leading_colon.is_some());
     path.segments
@@ -1456,41 +1457,12 @@ fn namespace_type_arguments(path: &syn::Path) -> Vec<crate::PathTypeArguments> {
             let PathArguments::AngleBracketed(arguments) = &source.arguments else {
                 return None;
             };
-            if segment + 1 == path.segments.len() && !contains_lifetime_or_const_argument(arguments)
-            {
-                return None;
-            }
             Some(crate::PathTypeArguments {
                 segment: segment + root,
                 arguments: convert_generic_arguments(arguments).ok()?,
             })
         })
         .collect()
-}
-
-fn contains_lifetime_or_const_argument(arguments: &AngleBracketedGenericArguments) -> bool {
-    use syn::visit::{self, Visit};
-
-    #[derive(Default)]
-    struct Search {
-        found: bool,
-    }
-
-    impl<'ast> Visit<'ast> for Search {
-        fn visit_generic_argument(&mut self, argument: &'ast SynGenericArgument) {
-            if self.found {
-                return;
-            }
-            match argument {
-                SynGenericArgument::Lifetime(_) | SynGenericArgument::Const(_) => self.found = true,
-                _ => visit::visit_generic_argument(self, argument),
-            }
-        }
-    }
-
-    let mut search = Search::default();
-    search.visit_angle_bracketed_generic_arguments(arguments);
-    search.found
 }
 
 /// Lower a named or positional member at the Rust source boundary.

@@ -370,8 +370,7 @@ pub enum Expr {
     },
     Tuple(Vec<Expr>),
     Call(Box<Expr>, Vec<Expr>),
-    /// The written method segment includes any explicit generic arguments.
-    MethodCall(Box<Expr>, String, Vec<Expr>),
+    MethodCall(Box<Expr>, MethodName, Vec<Expr>),
     Block(Block),
     LabeledBlock {
         label: String,
@@ -439,6 +438,25 @@ pub enum Expr {
     Parenthesized(Box<Expr>),         // (expr), e.g., (a + b)
     Cast(Box<Expr>, Type),            // expr as Type
     Assign(Box<Expr>, Box<Expr>), // left = right, e.g., state = State::S0 // lazy_static! macro support
+}
+
+/// A method name and the explicit generic arguments written after it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodName {
+    pub name: String,
+    pub generic_arguments: Option<Vec<GenericArgument>>,
+}
+
+impl From<String> for MethodName {
+    fn from(name: String) -> Self {
+        Self { name, generic_arguments: None }
+    }
+}
+
+impl From<&str> for MethodName {
+    fn from(name: &str) -> Self {
+        name.to_owned().into()
+    }
 }
 
 /// A half-open range can omit its end. An inclusive range requires one.

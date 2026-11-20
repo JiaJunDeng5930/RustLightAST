@@ -502,6 +502,21 @@ fn iterator_opaque_types_keep_the_associated_item_type() {
 fn explicit_method_arguments_survive_source_roundtrip() {
     let source = "fn values() -> Vec<u32> { (0..3).collect::<Vec<_>>() }";
     let module = rustlightast::parse_rust_source(source, "methods").unwrap();
+    let rustlightast::Item::Function(values) = &module.items[0] else {
+        panic!("expected modeled function");
+    };
+    let Some(rustlightast::Expr::MethodCall(_, method, _)) = values.body.expr.as_deref() else {
+        panic!("expected modeled method call");
+    };
+    assert_eq!(method.name, "collect");
+    assert_eq!(
+        method.generic_arguments,
+        Some(vec![rustlightast::Type::Generic(
+            "Vec".into(),
+            vec![rustlightast::Type::Infer.into()],
+        )
+        .into()]),
+    );
     let printed = rustlightast::RustCodeGenerator::new().generate_module_code(&module);
     let file = syn::parse_file(&printed).unwrap();
     let syn::Item::Fn(function) = &file.items[0] else {
