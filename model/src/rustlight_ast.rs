@@ -206,6 +206,27 @@ pub enum Type {
 }
 
 impl Type {
+    /// Build an array type with a known numeric length.
+    pub fn array(element: Type, length: usize) -> Self {
+        Self::Array(
+            Box::new(element),
+            Box::new(Expr::Literal(Literal::Integer {
+                digits: length.to_string(),
+                suffix: None,
+            })),
+        )
+    }
+}
+
+impl Expr {
+    /// Read an array length without evaluating a constant expression.
+    pub fn array_length_value(&self) -> Option<usize> {
+        match self {
+            Self::Literal(literal) => literal.integer_value()?.try_into().ok(),
+            Self::Parenthesized(inner) => inner.array_length_value(),
+            _ => None,
+        }
+    }
 }
 
 /// The syntax of an argument in an angle-bracketed generic argument list.
@@ -605,6 +626,38 @@ pub enum Literal {
     Str(String),
     Bool(bool),
     Char(char),
+}
+
+impl Literal {
+    pub fn string_value(&self) -> Option<&str> {
+        match self {
+            Self::Str(value) | Self::StringToken { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn integer_value(&self) -> Option<u128> {
+        let (radix, digits) = match self {
+            Self::Int(value) => return (*value).try_into().ok(),
+            Self::Integer { digits, .. } => {
+                if let Some(value) = digits.strip_prefix("0x") {
+                    (16, value)
+                } else if let Some(value) = digits.strip_prefix("0o") {
+                    (8, value)
+                } else if let Some(value) = digits.strip_prefix("0b") {
+                    (2, value)
+                } else {
+                    (10, digits.as_str())
+                }
+            }
+            _ => return None,
+        };
+        if digits.contains('_') {
+            u128::from_str_radix(&digits.replace('_', ""), radix).ok()
+        } else {
+            u128::from_str_radix(digits, radix).ok()
+        }
+    }
 }
 
 /// Code block
