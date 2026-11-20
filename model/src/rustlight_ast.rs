@@ -1,7 +1,18 @@
 // crates/rustlightast/src/rustlight_ast.rs
 
+mod declarations;
 mod pattern;
+mod macro_syntax;
 
+pub use declarations::{
+    AssociatedConstDeclaration, AssociatedTypeDeclaration, DeclaredParam, ForeignBlock, ForeignMember,
+    ForeignSafety, ForeignStatic, ForeignType, FunctionDeclaration, FunctionVariadic, Initializer,
+    MemberMacro, StaticDef, TraitDef, TraitMember,
+};
+pub use macro_syntax::{
+    IdentifierMacroFunctionName, IdentifierMacroFunctionTemplate, ItemMacroSyntax, MacroInput,
+    MacroMatchInput, MacroStatic, SpecializedMacroInput,
+};
 pub use pattern::{BindingMode, Pattern, PatternField, PatternPath};
 
 /// Lightweight Rust abstract syntax tree (module level)
@@ -20,7 +31,8 @@ pub struct RustModule {
 /// Module item definitions
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
-    Raw(String), // raw Rust item or crate-level directive
+    Raw(String), // opaque Rust syntax or crate-level directive
+    Macro(Box<MacroStmt>),
     Struct(StructDef),
     Enum(EnumDef),
     Union(UnionDef),
@@ -28,6 +40,8 @@ pub enum Item {
     Impl(ImplBlock),
     Trait(TraitDef),
     Const(ConstDef),
+    Static(StaticDef),
+    Foreign(ForeignBlock),
     TypeAlias(TypeAlias),
     Use(UseStatement),
     Mod(Box<RustModule>),      // nested module
@@ -96,26 +110,6 @@ pub struct FunctionQualifiers {
 pub enum FunctionAbi {
     Default,
     Named(String),
-}
-
-/// A trait declaration. Default methods share the function and block model
-/// used by free functions and impl methods.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TraitDef {
-    pub name: String,
-    pub vis: Visibility,
-    pub attrs: Vec<Attribute>,
-    pub generics: Generics,
-    pub supertraits: Vec<String>,
-    pub unsafety: bool,
-    pub auto: bool,
-    pub members: Vec<TraitMember>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TraitMember {
-    DefaultMethod(FunctionDef),
-    Raw(String),
 }
 
 /// Implementation block
@@ -602,7 +596,42 @@ pub struct MacroInvocation {
     /// An empty first segment represents a leading `::`.
     pub path: Vec<String>,
     pub delimiter: MacroDelimiter,
-    pub tokens: String,
+    pub tokens: MacroInput,
+}
+
+impl MacroInvocation {
+    /// The input interpreted as a comma-separated list of Rust expressions.
+    pub fn expression_arguments(&self) -> Option<&[Expr]> {
+        self.tokens.expressions()
+    }
+
+    /// The paths of nested invocations if the input contains no attributes
+    /// or implementation tokens.
+    pub(crate) fn nested_macro_paths(&self) -> Option<&[Vec<String>]> {
+        self.tokens.nested_macro_paths()
+    }
+
+    /// An expression list or a value repeated by a count expression.
+    pub fn vector_input(&self) -> Option<(&[Expr], Option<&Expr>)> {
+        if let Some((value, count)) = self.tokens.specialized().and_then(|input| input.repeat.as_ref()) {
+            return Some((std::slice::from_ref(value), Some(count)));
+        }
+        Some((self.expression_arguments()?, None))
+    }
+
+    pub fn match_input(&self) -> Option<&MacroMatchInput> {
+        self.tokens.specialized()?.match_test.as_ref()
+    }
+
+    pub fn thread_local_statics(&self) -> Option<&[MacroStatic]> {
+        self.tokens.specialized()?.statics.as_deref()
+    }
+
+    /// Implicit formatting captures when the format string follows the given
+    /// number of leading operands.
+    pub(crate) fn format_captures(&self, leading_operands: usize) -> Option<&[String]> {
+        self.tokens.specialized()?.format_captures.get(leading_operands)?.as_deref()
+    }
 }
 
 /// An expression-position macro invocation.
@@ -619,6 +648,8 @@ pub struct MacroStmt {
     /// The identifier between `!` and the delimiter in a local macro definition.
     pub name: Option<String>,
     pub invocation: MacroInvocation,
+    /// Syntax for a local macro definition with an identifier matcher and function-only body.
+    pub function_template: Option<IdentifierMacroFunctionTemplate>,
     pub semicolon: bool,
 }
 
@@ -669,6 +700,31 @@ pub enum Attribute {
 }
 
 impl Attribute {
+    /// Return the name of a single-segment attribute path.
+    pub fn unqualified_name(&self) -> Option<&str> {
+        match self {
+            Self::Structured { name, .. } => Self::meta_unqualified_name(name),
+            Self::Source { meta, .. } => Self::meta_unqualified_name(meta),
+        }
+    }
+
+    /// Return the unqualified name from a retained `#[...]` or `#![...]` attribute.
+    pub fn source_unqualified_name(source: &str) -> Option<&str> {
+        let source = source.trim().strip_prefix('#')?.trim_start();
+        let source = source.strip_prefix('!').unwrap_or(source).trim_start();
+        Self::meta_unqualified_name(source.strip_prefix('[')?.strip_suffix(']')?)
+    }
+
+    fn meta_unqualified_name(meta: &str) -> Option<&str> {
+        let meta = meta.trim_start();
+        let meta = meta.strip_prefix("r#").unwrap_or(meta);
+        let name_end = meta.find(|c: char| {
+            c.is_whitespace() || matches!(c, ':' | '(' | '[' | '{' | '=')
+        }).unwrap_or(meta.len());
+        let (name, arguments) = meta.split_at(name_end);
+        (!name.is_empty() && !arguments.trim_start().starts_with(':')).then_some(name)
+    }
+
     pub fn is_inner(&self) -> bool {
         matches!(self, Self::Source { inner: true, .. })
     }

@@ -23,6 +23,6 @@ path = "src/lib.rs"
 
 [dependencies]
 rustlightast-model = { version = "0.1.0", path = "model" }
-proc-macro2 = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 syn = { version = "2", features = ["full", "visit"] }

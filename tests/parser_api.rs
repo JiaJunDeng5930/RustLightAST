@@ -1,9 +1,8 @@
 mod support;
 
 use rustlightast::{
-    parse_rust_source, parse_rust_type_facts,
-    rustlight_parser::TYPE_FACT_ONLY_DOC,
-    Expr, GenericArgument, Item, Member, ParseError, RustCodeGenerator, Statement,
+    parse_rust_source,
+    Expr, GenericArgument, Item, Member, RustCodeGenerator, Statement,
     TraitBoundArgument, TraitBoundArguments, Type, TypeBound, WherePredicate,
 };
 
@@ -18,6 +17,29 @@ fn downstream_consumer_can_parse_and_print_without_an_optimizer() {
     assert!(matches!(function.body.expr.as_deref(), Some(Expr::Ident(name)) if name == "x"));
     let printed = RustCodeGenerator::new().generate_module_code(&module);
     parse_rust_source(&printed, "roundtrip").unwrap();
+}
+
+#[test]
+fn parenthesized_and_bracketed_macro_calls_can_be_block_results() {
+    let source = r#"
+fn check(value: u32) -> bool {
+    matches!(value, 0);
+    matches![value, 1]
+}
+fn check_again(value: u32) -> bool {
+    matches!(value, 2)
+}
+"#;
+    let module = parse_rust_source(source, "example").unwrap();
+    let printed = RustCodeGenerator::new().generate_module_code(&module);
+    let reparsed = parse_rust_source(&printed, "example").unwrap();
+    for module in [module, reparsed] {
+        for (index, item) in module.items.iter().enumerate() {
+            let Item::Function(function) = item else { panic!("expected function"); };
+            assert!(matches!(function.body.expr.as_deref(), Some(Expr::Macro(_))));
+            assert_eq!(function.body.stmts.len(), usize::from(index == 0));
+        }
+    }
 }
 
 #[test]
@@ -103,7 +125,6 @@ fn binary_operations_keep_leading_blocks_in_statements_and_tails() {
 }
 
 
-
 #[test]
 fn inline_module_attributes_keep_their_targets() {
     let source = r#"
@@ -113,27 +134,22 @@ fn inline_module_attributes_keep_their_targets() {
     pub fn value() -> u32 { test_value() }
 }
 "#;
-    let parsed = syn::parse_file(source).unwrap();
-    for module in [
-        parse_rust_source(source, "adapter").unwrap(),
-        rustlightast::rustlight_parser::convert_file_preserving_items(&parsed, "adapter".into()),
-    ] {
-        let output = RustCodeGenerator::new().generate_module_code(&module);
-        let output = syn::parse_file(&output).unwrap();
-        let syn::Item::Mod(tests) = &output.items[0] else {
-            panic!("expected a test module");
-        };
-        assert_eq!(tests.attrs.len(), 2);
-        assert!(matches!(tests.attrs[0].style, syn::AttrStyle::Outer));
-        assert!(tests.attrs[0].path().is_ident("cfg"));
-        assert!(matches!(tests.attrs[1].style, syn::AttrStyle::Inner(_)));
-        assert!(tests.attrs[1].path().is_ident("allow"));
-        let (_, items) = tests.content.as_ref().unwrap();
-        let syn::Item::Use(import) = &items[0] else {
-            panic!("expected the first declaration to be an import");
-        };
-        assert!(import.attrs.is_empty());
-    }
+    let module = parse_rust_source(source, "adapter").unwrap();
+    let output = RustCodeGenerator::new().generate_module_code(&module);
+    let output = syn::parse_file(&output).unwrap();
+    let syn::Item::Mod(tests) = &output.items[0] else {
+        panic!("expected a test module");
+    };
+    assert_eq!(tests.attrs.len(), 2);
+    assert!(matches!(tests.attrs[0].style, syn::AttrStyle::Outer));
+    assert!(tests.attrs[0].path().is_ident("cfg"));
+    assert!(matches!(tests.attrs[1].style, syn::AttrStyle::Inner(_)));
+    assert!(tests.attrs[1].path().is_ident("allow"));
+    let (_, items) = tests.content.as_ref().unwrap();
+    let syn::Item::Use(import) = &items[0] else {
+        panic!("expected the first declaration to be an import");
+    };
+    assert!(import.attrs.is_empty());
 }
 
 #[test]
@@ -223,7 +239,7 @@ fn total() -> u32 {
             })
             .unwrap();
         let Some(Statement::Macro(definition)) = function.body.stmts.first() else {
-            panic!("expected a local macro definition");
+            panic!("expected a modeled local macro definition");
         };
         assert_eq!(definition.name.as_deref(), Some("zero"));
         assert_eq!(definition.invocation.path, ["macro_rules"]);
@@ -256,6 +272,52 @@ fn total() -> u32 {
         assert!(statements[0].attrs[0].contains("cfg"));
         assert!(statements[1].invocation.tokens.contains("(1)"));
     }
+}
+
+
+#[test]
+fn macro_items_match_identifier_arguments_and_roundtrip() {
+    use quote::ToTokens;
+    use rustlightast::Visibility;
+
+    let source = r#"
+macro_rules! getter {
+    ($name:ident, $field:ident) => {
+        pub(crate) fn $name(state: Options) -> bool { state.$field }
+    };
+}
+
+getter!(r#type, enabled);
+getter!(r#type, enabled,);
+getter!(impl, enabled);
+getter!(valid, 42);
+macro_rules! changes_trait {
+    ($name:ident) => {
+        fn $name() { impl Clone for Options {} }
+    };
+}
+"#;
+    let module = parse_rust_source(source, "macros").unwrap();
+    let item_macro = |index| {
+        let Item::Macro(mac) = &module.items[index] else {
+            panic!("expected a macro item");
+        };
+        mac.as_ref()
+    };
+    let template = item_macro(0).function_template.as_ref().unwrap();
+    assert_eq!(item_macro(0).name.as_deref(), Some("getter"));
+    assert_eq!(
+        template.functions(&item_macro(1).invocation).unwrap().collect::<Vec<_>>(),
+        [("r#type", &Visibility::Restricted(vec!["crate".into()]))],
+    );
+    for index in 2..=4 {
+        assert!(template.functions(&item_macro(index).invocation).is_none());
+    }
+    assert!(item_macro(5).function_template.is_none());
+
+    let printed = RustCodeGenerator::new().generate_module_code(&module);
+    let tokens = |source: &str| syn::parse_file(source).unwrap().to_token_stream().to_string();
+    assert_eq!(tokens(source), tokens(&printed));
 }
 
 
@@ -368,17 +430,8 @@ fn build() {
     assert!(printed.contains("Pending::<std::rc::Rc<u32>>"));
     parse_rust_source(&printed, "roundtrip").unwrap();
 
-    let opaque = support::parse_expression("Opaque::<{ const { 3 } }> {}").unwrap();
-    assert!(matches!(
-        &opaque,
-        Expr::Record {
-            path: RecordPath::Segments(_),
-            ..
-        }
-    ));
-    let printed = support::print_expression(&opaque);
-    assert!(printed.contains("const"));
-    syn::parse_str::<syn::Expr>(&printed).unwrap();
+    assert!(support::parse_expression("Opaque::<{ const { 3 } }> {}").is_err());
+
 }
 
 #[test]
@@ -618,7 +671,7 @@ fn trait_defaults_are_editable_without_changing_other_members() {
         type Item;
         const SIZE: usize = 2;
         fn required(&self, value: T) -> Self::Item;
-        fn unsupported(self: &Self, (left, right): (u32, u32)) -> u32 { left + right }
+        fn combine(self: &Self, (left, right): (u32, u32)) -> u32 { left + right }
         #[inline]
         unsafe fn current(&self) -> u32 { 7 }
     }
@@ -631,13 +684,23 @@ fn trait_defaults_are_editable_without_changing_other_members() {
     let Item::Trait(view) = &mut module.items[0] else {
         panic!("expected a modeled trait");
     };
-    let [opaque @ .., TraitMember::DefaultMethod(default)] = view.members.as_mut_slice() else {
-        panic!("expected a modeled default method");
+    let [
+        TraitMember::AssocType(associated_type),
+        TraitMember::AssocConst(associated_const),
+        TraitMember::RequiredMethod(required),
+        TraitMember::DefaultMethod(combine),
+        TraitMember::DefaultMethod(default),
+    ] = view.members.as_mut_slice()
+    else {
+        panic!("expected structural trait members");
     };
-    assert!(opaque
-        .iter()
-        .all(|member| matches!(member, TraitMember::Raw(_))
-            || matches!(member, TraitMember::DefaultMethod(method) if method.name == "unsupported")));
+    assert_eq!(associated_type.name, "Item");
+    assert!(associated_type.default.is_none());
+    assert_eq!(associated_const.name, "SIZE");
+    assert!(associated_const.default.as_ref().unwrap().expression().is_some());
+    assert_eq!(required.name, "required");
+    assert!(matches!(required.return_type, Type::Path(ref path) if path == &["Self", "Item"]));
+    assert!(matches!(combine.params[1].pattern, Some(rustlightast::Pattern::Tuple(_))));
     assert_eq!(default.name, "current");
     default.body.expr = Some(Box::new(Expr::Literal(Literal::Int(19))));
 
@@ -712,4 +775,24 @@ fn models_and_roundtrips_pointer_types_and_type_parameter_defaults() {
     let printed = RustCodeGenerator::new().generate_module_code(&module);
     let tokens = |source: &str| syn::parse_file(source).unwrap().to_token_stream().to_string();
     assert_eq!(tokens(&printed), tokens(source));
+}
+
+#[test]
+fn local_static_declarations_have_structured_types_and_values() {
+    let module = parse_rust_source("fn outer() { static VALUE: u32 = 1; }", "local").unwrap();
+    let Item::Function(function) = &module.items[0] else {
+        panic!("expected outer function");
+    };
+    let Statement::Item(item) = &function.body.stmts[0] else {
+        panic!("expected local declaration");
+    };
+    let Item::Static(item) = item.as_ref() else {
+        panic!("expected a modeled static");
+    };
+    assert_eq!(item.name, "VALUE");
+    assert_eq!(item.ty, Type::Named("u32".to_owned()));
+    assert!(matches!(item.value.expression(), Some(Expr::Literal(_))));
+    let printed = RustCodeGenerator::new().generate_module_code(&module);
+    assert!(printed.contains("static VALUE"));
+    syn::parse_file(&printed).unwrap();
 }

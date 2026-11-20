@@ -249,16 +249,7 @@ fn preserves_async_closure_and_if_let_patterns() {
     ));
     check_shape(&modeled, source);
 
-    let opaque = "if let pattern!() = value {}";
-    let modeled = support::parse_expression(opaque).unwrap();
-    assert!(matches!(
-        &modeled,
-        Expr::IfLet {
-            pattern: Pattern::Opaque(_),
-            ..
-        }
-    ));
-    check_shape(&modeled, opaque);
+    assert!(support::parse_expression("if let pattern!() = value {}").is_err());
 }
 
 fn callable_target() -> Type {

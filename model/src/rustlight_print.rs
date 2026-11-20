@@ -93,6 +93,13 @@ impl ExpressionPosition {
 pub struct RustCodeGenerator {
     buffer: String,
     indent_level: usize,
+    measurement: Option<ModuleMeasurement>,
+}
+
+#[derive(Default)]
+struct ModuleMeasurement {
+    bytes: usize,
+    ends_with_newline: bool,
 }
 
 impl Default for RustCodeGenerator {
@@ -106,7 +113,13 @@ impl RustCodeGenerator {
         Self {
             buffer: String::new(),
             indent_level: 0,
+            measurement: None,
         }
+    }
+
+    /// Print one modeled Rust type at the source boundary.
+    fn generate_type_code(&self, ty: &Type) -> String {
+        self.type_to_string(ty)
     }
 
     /// Render namespace segments for consumers that resolve paths by spelling.
@@ -167,7 +180,11 @@ impl RustCodeGenerator {
     // Main entry: generate full module code
     pub fn generate_module_code(&mut self, module: &RustModule) -> String {
         self.buffer.clear();
+        self.generate_module(module);
+        self.buffer.clone()
+    }
 
+    fn generate_module(&mut self, module: &RustModule) {
         for doc in &module.docs {
             self.writeln(doc);
         }
@@ -181,7 +198,6 @@ impl RustCodeGenerator {
         // Generate module contents
         self.generate_items(&module.items);
 
-        self.buffer.clone()
     }
 
     // Generate multiple items
@@ -198,6 +214,7 @@ impl RustCodeGenerator {
     fn generate_item(&mut self, item: &Item) {
         match item {
             Item::Raw(raw) => self.generate_raw(raw),
+            Item::Macro(item) => self.generate_macro_statement(item),
             Item::Struct(s) => self.generate_struct(s),
             Item::Enum(e) => self.generate_enum(e),
             Item::Union(u) => self.generate_union(u), // New
@@ -205,6 +222,8 @@ impl RustCodeGenerator {
             Item::Impl(i) => self.generate_impl(i),
             Item::Trait(t) => self.generate_trait(t),
             Item::Const(c) => self.generate_const(c),
+            Item::Static(s) => self.generate_static(s),
+            Item::Foreign(block) => self.generate_foreign_block(block),
             Item::TypeAlias(t) => self.generate_type_alias(t),
             Item::Use(u) => self.generate_use(u),
             Item::Mod(m) => self.generate_nested_module(m),
@@ -369,7 +388,7 @@ impl RustCodeGenerator {
         ));
         if !trait_def.supertraits.is_empty() {
             self.write(": ");
-            self.write(&trait_def.supertraits.join(" + "));
+            self.write(&self.ordered_type_bounds_to_string(&trait_def.supertraits));
         }
         self.write_where_predicates(&trait_def.generics.where_predicates);
         self.writeln(" {");
@@ -378,6 +397,11 @@ impl RustCodeGenerator {
         for member in &trait_def.members {
             match member {
                 TraitMember::DefaultMethod(function) => self.generate_function(function),
+                TraitMember::RequiredMethod(function) => self.generate_function_declaration(function),
+                TraitMember::AssocConst(associated) => self.generate_associated_const(associated),
+                TraitMember::AssocType(associated) => self.generate_associated_type(associated),
+                TraitMember::Macro(mac) => self.generate_member_macro(mac),
+                TraitMember::RetainedMethod { source, .. } |
                 TraitMember::Raw(source) => self.generate_raw(source),
             }
         }
@@ -394,22 +418,12 @@ impl RustCodeGenerator {
 
         self.generate_attributes(&f.attrs, false);
 
-        let abi = Self::abi_prefix(f.qualifiers.abi.as_ref());
-        let head = format!(
-            "{}{}{}{}{}fn {}{}",
-            self.visibility(&f.vis),
-            if f.qualifiers.constness { "const " } else { "" },
-            if f.asyncness { "async " } else { "" },
-            if f.qualifiers.unsafety { "unsafe " } else { "" },
-            abi,
-            f.name,
-            self.generic_params_to_string(&f.generics.params)
+        let head = self.function_head(
+            &f.vis, &f.qualifiers, f.asyncness, false, &f.name, &f.generics,
         );
-        let mut params_and_return = format!("({})", self.params_to_string(&f.params));
-        if f.qualifiers.explicit_return_type || f.return_type != Type::Unit {
-            params_and_return.push_str(" -> ");
-            params_and_return.push_str(&self.type_to_string(&f.return_type));
-        }
+        let params_and_return = self.function_params_and_return(
+            &self.params_to_string(&f.params), &f.return_type, f.qualifiers.explicit_return_type,
+        );
         let signature = format!("{}{}", head, params_and_return);
         let where_clauses = f.generics.where_predicates.iter()
             .map(|predicate| self.where_predicate_to_string(predicate))
@@ -450,6 +464,171 @@ impl RustCodeGenerator {
         self.dedent();
         self.writeln("}");
         self.writeln("");
+    }
+
+    fn function_head(
+        &self, vis: &Visibility, qualifiers: &FunctionQualifiers, asyncness: bool, safe: bool,
+        name: &str, generics: &Generics,
+    ) -> String {
+        let safety = if safe { "safe " } else if qualifiers.unsafety { "unsafe " } else { "" };
+        format!(
+            "{}{}{}{safety}{}fn {name}{}",
+            self.visibility(vis),
+            if qualifiers.constness { "const " } else { "" },
+            if asyncness { "async " } else { "" },
+            Self::abi_prefix(qualifiers.abi.as_ref()),
+            self.generic_params_to_string(&generics.params)
+        )
+    }
+
+    fn function_params_and_return(&self, params: &str, ty: &Type, explicit_return: bool) -> String {
+        let mut signature = format!("({params})");
+        if explicit_return || *ty != Type::Unit {
+            signature.push_str(" -> ");
+            signature.push_str(&self.type_to_string(ty));
+        }
+        signature
+    }
+
+    fn generate_function_declaration(&mut self, function: &FunctionDeclaration) {
+        for doc in &function.docs {
+            self.writeln(doc);
+        }
+        self.generate_attributes(&function.attrs, false);
+        self.write(&self.function_head(
+            &function.vis, &function.qualifiers, function.asyncness, function.safe,
+            &function.name, &function.generics,
+        ));
+        let mut params = function.params.iter().enumerate().map(|(index, parameter)| {
+            let mut generator = Self::new();
+            generator.generate_attributes(&parameter.attrs, false);
+            let param = &parameter.param;
+            if index == 0 && function.shorthand_receiver {
+                generator.write(&self.shorthand_receiver_to_string(param));
+            } else {
+                generator.write(&self.param_to_string(param));
+            }
+            generator.buffer
+        }).collect::<Vec<_>>();
+        if let Some(variadic) = &function.variadic {
+            let mut generator = Self::new();
+            generator.generate_attributes(&variadic.attrs, false);
+            if let Some(pattern) = &variadic.pattern {
+                generator.generate_pattern(pattern);
+                generator.write(": ");
+            }
+            generator.write("...");
+            params.push(generator.buffer);
+        }
+        self.write(&self.function_params_and_return(
+            &params.join(", "), &function.return_type, function.qualifiers.explicit_return_type,
+        ));
+        self.write_where_predicates(&function.generics.where_predicates);
+        self.writeln(";");
+    }
+
+    fn shorthand_receiver_to_string(&self, param: &Param) -> String {
+        if let Type::Reference(_, lifetime, mutable) = &param.ty {
+            let lifetime = lifetime.as_ref().map_or(String::new(), |lifetime| format!("{lifetime} "));
+            let modifier = if *mutable { "mut " } else { "" };
+            return format!("&{lifetime}{modifier}self");
+        }
+        if param.mutable { "mut self".to_owned() } else { "self".to_owned() }
+    }
+
+    fn generate_associated_const(&mut self, associated: &AssociatedConstDeclaration) {
+        self.generate_attributes(&associated.attrs, false);
+        self.write(&format!(
+            "const {}{}: {}", associated.name, self.generic_params_to_string(&associated.generics.params),
+            self.type_to_string(&associated.ty),
+        ));
+        self.write_where_predicates(&associated.generics.where_predicates);
+        if let Some(value) = &associated.default {
+            self.write(" = ");
+            self.generate_initializer(value);
+        }
+        self.writeln(";");
+    }
+
+    fn generate_associated_type(&mut self, associated: &AssociatedTypeDeclaration) {
+        self.generate_attributes(&associated.attrs, false);
+        self.write(&format!("type {}{}", associated.name, self.generic_params_to_string(&associated.generics.params)));
+        if !associated.bounds.is_empty() {
+            self.write(": ");
+            self.write(&self.ordered_type_bounds_to_string(&associated.bounds));
+        }
+        if let Some(ty) = &associated.default {
+            self.write(&format!(" = {}", self.type_to_string(ty)));
+        }
+        self.write_where_predicates(&associated.generics.where_predicates);
+        self.writeln(";");
+    }
+
+    fn generate_initializer(&mut self, initializer: &Initializer) {
+        match initializer {
+            Initializer::Expr(value) => self.generate_expr(value),
+            Initializer::Raw(source) => self.write(source),
+        }
+    }
+
+    fn generate_static(&mut self, item: &StaticDef) {
+        for doc in &item.docs {
+            self.writeln(doc);
+        }
+        self.generate_attributes(&item.attrs, false);
+        self.write_static_declaration(&item.vis, ForeignSafety::Implicit, item.mutable, &item.name, &item.ty);
+        self.write(" = ");
+        self.generate_initializer(&item.value);
+        self.writeln(";");
+        self.writeln("");
+    }
+
+    fn write_static_declaration(
+        &mut self, visibility: &Visibility, safety: ForeignSafety, mutable: bool, name: &str, ty: &Type,
+    ) {
+        let safety = match safety {
+            ForeignSafety::Implicit => "",
+            ForeignSafety::Safe => "safe ",
+            ForeignSafety::Unsafe => "unsafe ",
+        };
+        let mutable = if mutable { "mut " } else { "" };
+        self.write(&format!("{}{safety}static {mutable}{name}: {}", self.visibility(visibility), self.type_to_string(ty)));
+    }
+
+    fn generate_foreign_block(&mut self, block: &ForeignBlock) {
+        self.generate_attributes(&block.attrs, false);
+        let unsafety = if block.unsafety { "unsafe " } else { "" };
+        self.writeln(&format!("{unsafety}{}{{", Self::abi_prefix(Some(&block.abi))));
+        self.indent();
+        self.generate_attributes(&block.attrs, true);
+        for member in &block.members {
+            match member {
+                ForeignMember::Function(function) => self.generate_function_declaration(function),
+                ForeignMember::Static(item) => {
+                    self.generate_attributes(&item.attrs, false);
+                    self.write_static_declaration(&item.vis, item.safety, item.mutable, &item.name, &item.ty);
+                    self.writeln(";");
+                }
+                ForeignMember::Type(item) => {
+                    self.generate_attributes(&item.attrs, false);
+                    self.write(&format!("{}type {}{}", self.visibility(&item.vis), item.name,
+                        self.generic_params_to_string(&item.generics.params)));
+                    self.write_where_predicates(&item.generics.where_predicates);
+                    self.writeln(";");
+                }
+                ForeignMember::Macro(mac) => self.generate_member_macro(mac),
+                ForeignMember::Raw(source) => self.generate_raw(source),
+            }
+        }
+        self.dedent();
+        self.writeln("}");
+        self.writeln("");
+    }
+
+    fn generate_member_macro(&mut self, mac: &MemberMacro) {
+        self.generate_attributes(&mac.attrs, false);
+        self.generate_macro_invocation(&mac.invocation);
+        self.writeln(if mac.trailing_semicolon { ";" } else { "" });
     }
 
     fn generic_param_to_string(&self, generic: &GenericParam) -> String {
@@ -580,20 +759,7 @@ impl RustCodeGenerator {
                 self.generate_expr_at(expr, ExpressionPosition::StatementHead);
                 self.writeln(";");
             }
-            Statement::Macro(statement) => {
-                for attr in &statement.attrs {
-                    self.writeln(attr);
-                }
-                if let Some(name) = &statement.name {
-                    let mac = &statement.invocation;
-                    let (open, close) = mac.delimiter.brackets();
-                    self.generate_path(&mac.path);
-                    self.write(&format!("! {name} {open}{}{close}", mac.tokens));
-                } else {
-                    self.generate_macro_invocation(&statement.invocation);
-                }
-                self.writeln(if statement.semicolon { ";" } else { "" });
-            }
+            Statement::Macro(statement) => self.generate_macro_statement(statement),
             Statement::Item(item) => self.generate_item(item),
             Statement::Comment(comment) => {
                 self.writeln(&format!("// {}", comment));
@@ -1217,6 +1383,21 @@ impl RustCodeGenerator {
         if parenthesized {
             self.write(")");
         }
+    }
+
+    fn generate_macro_statement(&mut self, statement: &crate::MacroStmt) {
+        for attr in &statement.attrs {
+            self.writeln(attr);
+        }
+        if let Some(name) = &statement.name {
+            let mac = &statement.invocation;
+            let (open, close) = mac.delimiter.brackets();
+            self.generate_path(&mac.path);
+            self.write(&format!("! {name} {open}{}{close}", mac.tokens));
+        } else {
+            self.generate_macro_invocation(&statement.invocation);
+        }
+        self.writeln(if statement.semicolon { ";" } else { "" });
     }
 
     fn generate_macro_invocation(&mut self, mac: &crate::MacroInvocation) {
@@ -1850,10 +2031,25 @@ impl RustCodeGenerator {
     // Helper methods
     fn writeln(&mut self, s: &str) {
         self.write(s);
-        self.buffer.push('\n');
+        if let Some(measurement) = &mut self.measurement {
+            measurement.bytes += 1;
+            measurement.ends_with_newline = true;
+        } else {
+            self.buffer.push('\n');
+        }
     }
 
     fn write(&mut self, s: &str) {
+        if let Some(measurement) = &mut self.measurement {
+            if measurement.bytes == 0 || measurement.ends_with_newline {
+                measurement.bytes += 4 * self.indent_level;
+            }
+            measurement.bytes += s.len();
+            if !s.is_empty() || self.indent_level > 0 {
+                measurement.ends_with_newline = s.ends_with('\n');
+            }
+            return;
+        }
         if self.buffer.ends_with('\n') || self.buffer.is_empty() {
             self.buffer.push_str(&"    ".repeat(self.indent_level));
         }

@@ -21,8 +21,10 @@ fn main() -> Result<(), rustlightast::ParseError> {
 - `rustlight_parser` converts supported Rust source into that tree.
 - `rustlight_print` renders the tree as Rust source.
 
-`parse_rust_type_facts` extracts declarations and signatures for analysis,
-with function bodies omitted. Unsupported parser syntax returns `ParseError`.
+`ParsedSourceFile::parse` reports a conversion error if the source contains
+syntax the model cannot represent. `ParsedSourceFile::declaration_view` exposes
+declarations and signatures from
+an existing parse. For a standalone source file, use `parse_file_declaration_view`.
 
 Consumers that receive a RustLight model can depend on the model package:
 

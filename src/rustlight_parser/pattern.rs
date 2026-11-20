@@ -2,10 +2,15 @@ use super::{
     convert_literal, convert_member, convert_namespace_path, convert_range, convert_type, ParseError,
 };
 use crate::{BindingMode, Pattern, PatternField, PatternPath};
+
 use syn::Pat;
 
 /// Convert a parsed Rust binding pattern into RustLightAST.
 pub(super) fn convert_pattern(pattern: &Pat) -> syn::Result<Pattern> {
+    lower_pattern(pattern)
+}
+
+fn lower_pattern(pattern: &Pat) -> syn::Result<Pattern> {
     match pattern {
         Pat::Ident(binding) if binding.attrs.is_empty() => Ok(Pattern::Ident {
             name: binding.ident.to_string(),
@@ -92,7 +97,7 @@ fn pattern_path(path: &syn::Path, qualified_self: &Option<syn::QSelf>) -> syn::R
             "unsupported qualified path in pattern",
         ));
     }
-    Ok(convert_namespace_path(path))
+    convert_namespace_path(path)
 }
 
 fn convert_pattern_field(field: &syn::FieldPat) -> syn::Result<PatternField> {
