@@ -354,7 +354,7 @@ pub enum RecordPath {
 pub enum Expr {
     Ident(String),
     /// An opaque macro invocation preserved as Rust source, e.g. `panic!("msg")`.
-    Macro(String),
+    Macro(Box<MacroExpr>),
     Path(Vec<String>, PathType),
     Field {
         base: Box<Expr>,
@@ -553,6 +553,8 @@ pub enum Literal {
     CharToken { spelling: String, value: char },
     /// A floating-point token with its original mantissa, exponent and suffix.
     FloatToken { digits: String, suffix: Option<String> },
+    /// A string token, retaining its original escaping and raw delimiters.
+    StringToken { spelling: String, value: String },
     Int(i64),
     Float(f64),
     Str(String),
@@ -583,13 +585,27 @@ pub enum Statement {
     Comment(String), // comment statement
 }
 
-/// A statement-position macro invocation whose input remains opaque Rust tokens.
+/// A macro invocation whose input follows the grammar of the named macro.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MacroInvocation {
+    /// An empty first segment represents a leading `::`.
+    pub path: Vec<String>,
+    pub delimiter: MacroDelimiter,
+    pub tokens: String,
+}
+
+/// An expression-position macro invocation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MacroExpr {
+    pub attrs: Vec<String>,
+    pub invocation: MacroInvocation,
+}
+
+/// A statement-position macro invocation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MacroStmt {
     pub attrs: Vec<String>,
-    pub path: String,
-    pub delimiter: MacroDelimiter,
-    pub tokens: String,
+    pub invocation: MacroInvocation,
     pub semicolon: bool,
 }
 
@@ -598,6 +614,16 @@ pub enum MacroDelimiter {
     Parenthesis,
     Brace,
     Bracket,
+}
+
+impl MacroDelimiter {
+    pub fn brackets(self) -> (char, char) {
+        match self {
+            Self::Parenthesis => ('(', ')'),
+            Self::Brace => ('{', '}'),
+            Self::Bracket => ('[', ']'),
+        }
+    }
 }
 
 /// let binding

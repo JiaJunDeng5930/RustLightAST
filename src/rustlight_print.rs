@@ -581,16 +581,7 @@ impl RustCodeGenerator {
                 for attr in &statement.attrs {
                     self.writeln(attr);
                 }
-                let (open, close) = match statement.delimiter {
-                    crate::MacroDelimiter::Parenthesis => ("(", ")"),
-                    crate::MacroDelimiter::Brace => ("{", "}"),
-                    crate::MacroDelimiter::Bracket => ("[", "]"),
-                };
-                self.write(&statement.path);
-                self.write("!");
-                self.write(open);
-                self.write(&statement.tokens);
-                self.write(close);
+                self.generate_macro_invocation(&statement.invocation);
                 self.writeln(if statement.semicolon { ";" } else { "" });
             }
             Statement::Item(item) => self.generate_item(item),
@@ -660,7 +651,13 @@ impl RustCodeGenerator {
     fn generate_expr_at(&mut self, expr: &Expr, position: ExpressionPosition) {
         match expr {
             Expr::Ident(id) => self.write(id),
-            Expr::Macro(source) => self.write(source),
+            Expr::Macro(expression) => {
+                for attr in &expression.attrs {
+                    self.write(attr);
+                    self.write(" ");
+                }
+                self.generate_macro_invocation(&expression.invocation);
+            }
             Expr::Path(path, PathType::Namespace) => self.generate_path(path),
             Expr::Path(path, kind @ PathType::NamespaceWithTypeArguments(_)) => {
                 let segments = Self::namespace_path_segments(path, kind)
@@ -1222,10 +1219,17 @@ impl RustCodeGenerator {
         }
     }
 
+    fn generate_macro_invocation(&mut self, mac: &crate::MacroInvocation) {
+        let (open, close) = mac.delimiter.brackets();
+        self.generate_path(&mac.path);
+        self.write(&format!("!{open}{}{close}", mac.tokens));
+    }
+
     fn generate_literal(&mut self, lit: &Literal) {
         match lit {
             Literal::Raw(source)
             | Literal::Byte { spelling: source, .. }
+            | Literal::StringToken { spelling: source, .. }
             | Literal::CharToken { spelling: source, .. } => self.write(source),
             Literal::Integer { digits, suffix } | Literal::FloatToken { digits, suffix } => {
                 self.write(digits);

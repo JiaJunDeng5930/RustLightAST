@@ -932,13 +932,7 @@ fn convert_block(block: &syn::Block) -> syn::Result<Block> {
                     .iter()
                     .map(|attr| attr.to_token_stream().to_string())
                     .collect(),
-                path: normalize_path_tokens(statement.mac.path.to_token_stream()),
-                delimiter: match statement.mac.delimiter {
-                    syn::MacroDelimiter::Paren(_) => crate::MacroDelimiter::Parenthesis,
-                    syn::MacroDelimiter::Brace(_) => crate::MacroDelimiter::Brace,
-                    syn::MacroDelimiter::Bracket(_) => crate::MacroDelimiter::Bracket,
-                },
-                tokens: statement.mac.tokens.to_string(),
+                invocation: convert_macro_invocation(&statement.mac),
                 semicolon: statement.semi_token.is_some(),
             })),
         }
@@ -948,6 +942,19 @@ fn convert_block(block: &syn::Block) -> syn::Result<Block> {
         stmts,
         expr: tail_expr,
     })
+}
+
+/// Lower a macro invocation without interpreting its input grammar.
+fn convert_macro_invocation(mac: &syn::Macro) -> crate::MacroInvocation {
+    crate::MacroInvocation {
+        path: path_segments(&mac.path),
+        delimiter: match mac.delimiter {
+            syn::MacroDelimiter::Paren(_) => crate::MacroDelimiter::Parenthesis,
+            syn::MacroDelimiter::Brace(_) => crate::MacroDelimiter::Brace,
+            syn::MacroDelimiter::Bracket(_) => crate::MacroDelimiter::Bracket,
+        },
+        tokens: mac.tokens.to_string(),
+    }
 }
 
 fn convert_local_item(item: &SynItem) -> Item {
@@ -1253,12 +1260,10 @@ fn convert_expr(expr: &syn::Expr) -> syn::Result<Expr> {
                 .map(convert_expr)
                 .collect::<syn::Result<Vec<_>>>()?,
         )),
-        syn::Expr::Macro(expr_macro) => {
-            // Preserve generated fallback arms such as
-            // `_ => panic!("non-exhaustive match")` as opaque Rust source.
-            let source = normalize_tokens(expr_macro.to_token_stream());
-            Ok(Expr::Macro(source))
-        }
+        syn::Expr::Macro(expression) => Ok(Expr::Macro(Box::new(crate::MacroExpr {
+            attrs: expression.attrs.iter().map(|attr| attr.to_token_stream().to_string()).collect(),
+            invocation: convert_macro_invocation(&expression.mac),
+        }))),
         syn::Expr::Closure(ExprClosure {
             attrs,
             capture,
@@ -1533,6 +1538,10 @@ fn convert_literal(lit: &Lit) -> syn::Result<Literal> {
         Lit::Char(character) => Ok(Literal::CharToken {
             spelling: character.to_token_stream().to_string(),
             value: character.value(),
+        }),
+        Lit::Str(string) => Ok(Literal::StringToken {
+            spelling: string.to_token_stream().to_string(),
+            value: string.value(),
         }),
         Lit::Float(float) => {
             let token = float.to_string();

@@ -234,7 +234,7 @@ fn total() -> u32 {
         assert_eq!(
             statements
                 .iter()
-                .map(|statement| { (statement.delimiter, statement.semicolon) })
+                .map(|statement| (statement.invocation.delimiter, statement.semicolon))
                 .collect::<Vec<_>>(),
             [
                 (MacroDelimiter::Parenthesis, true),
@@ -246,12 +246,13 @@ fn total() -> u32 {
         );
         assert!(statements
             .iter()
-            .all(|statement| statement.path == "crate::add"));
+            .all(|statement| statement.invocation.path == ["crate", "add"]));
         assert_eq!(statements[0].attrs.len(), 1);
         assert!(statements[0].attrs[0].contains("cfg"));
-        assert!(statements[1].tokens.contains("(1)"));
+        assert!(statements[1].invocation.tokens.contains("(1)"));
     }
 }
+
 
 #[test]
 fn loop_labels_roundtrip() {
