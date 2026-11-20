@@ -632,7 +632,7 @@ fn convert_return_type(output: &ReturnType) -> syn::Result<Type> {
 }
 
 /// Parse an isolated Rust type into the same model used by module declarations.
-pub(crate) fn parse_rust_type(source: &str) -> syn::Result<Type> {
+pub fn parse_rust_type(source: &str) -> syn::Result<Type> {
     convert_type(&syn::parse_str(source)?)
 }
 
@@ -1610,7 +1610,7 @@ pub fn convert_record_path(path: &syn::Path) -> syn::Result<RecordPath> {
 
 /// Read an unparameterized path without exposing the parser's syntax tree.
 /// The first segment can be a Rust path keyword; later segments must be identifiers.
-pub(crate) fn parse_plain_path(source: &str) -> Result<Vec<String>, SourceParseError> {
+pub fn parse_plain_path(source: &str) -> Result<Vec<String>, SourceParseError> {
     use syn::ext::IdentExt;
 
     let path = syn::parse_str::<syn::Path>(source)?;
@@ -1632,7 +1632,7 @@ pub enum CfgAtom {
 }
 
 /// Parse the shape of a command-line cfg atom without exposing a syntax tree.
-pub(crate) fn parse_cfg_atom(source: &str) -> Result<CfgAtom, SourceParseError> {
+pub fn parse_cfg_atom(source: &str) -> Result<CfgAtom, SourceParseError> {
     let invalid = || syn::Error::new(
         proc_macro2::Span::call_site(),
         "expected NAME or NAME=\"VALUE\"",
