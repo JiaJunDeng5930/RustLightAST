@@ -117,7 +117,7 @@ impl RustCodeGenerator {
         match kind {
             PathType::Namespace => Some(Cow::Borrowed(path)),
             PathType::NamespaceWithTypeArguments(arguments) => {
-                Some(Self::namespace_segments_with_arguments(path, arguments))
+                Some(Self::namespace_segments_with_arguments(path, arguments, true))
             }
             PathType::Qualified(_) => None,
         }
@@ -126,6 +126,7 @@ impl RustCodeGenerator {
     fn namespace_segments_with_arguments<'a>(
         path: &'a [String],
         arguments: &[PathTypeArguments],
+        turbofish: bool,
     ) -> Cow<'a, [String]> {
         if arguments.is_empty() {
             return Cow::Borrowed(path);
@@ -134,7 +135,9 @@ impl RustCodeGenerator {
         let mut segments = path.to_vec();
         for list in arguments {
             let segment = &mut segments[list.segment];
-            segment.push_str("::");
+            if turbofish {
+                segment.push_str("::");
+            }
             printer.append_generic_arguments(segment, &list.arguments);
         }
         Cow::Owned(segments)
@@ -581,7 +584,14 @@ impl RustCodeGenerator {
                 for attr in &statement.attrs {
                     self.writeln(attr);
                 }
-                self.generate_macro_invocation(&statement.invocation);
+                if let Some(name) = &statement.name {
+                    let mac = &statement.invocation;
+                    let (open, close) = mac.delimiter.brackets();
+                    self.generate_path(&mac.path);
+                    self.write(&format!("! {name} {open}{}{close}", mac.tokens));
+                } else {
+                    self.generate_macro_invocation(&statement.invocation);
+                }
                 self.writeln(if statement.semicolon { ";" } else { "" });
             }
             Statement::Item(item) => self.generate_item(item),
@@ -665,17 +675,7 @@ impl RustCodeGenerator {
                 self.generate_path(&segments);
             }
             Expr::Path(path, PathType::Qualified(qualification)) => {
-                self.write("<");
-                match &qualification.self_type {
-                    QualifiedSelfType::Type(ty) => self.write(&self.type_to_string(ty)),
-                    QualifiedSelfType::Verbatim(source) => self.write(source),
-                }
-                if let Some(trait_path) = &qualification.trait_path {
-                    self.write(" as ");
-                    self.generate_path(trait_path);
-                }
-                self.write(">::");
-                self.generate_path(path);
+                self.write(&self.qualified_path_to_string(path, qualification, true));
             }
             Expr::Field { base, member } => {
                 self.generate_postfix_base(base, position);
@@ -1487,6 +1487,8 @@ impl RustCodeGenerator {
         let source = self.type_to_string(ty);
         if matches!(ty, Type::CallableTrait(callable)
             if !callable.leading_bounds.is_empty() || !callable.trailing_bounds.is_empty())
+            || matches!(ty, Type::TraitObject { bounds, .. } | Type::ImplTraitBounds(bounds)
+                if bounds.len() > 1)
         {
             format!("({source})")
         } else {
@@ -1633,6 +1635,17 @@ impl RustCodeGenerator {
                 self.append_generic_arguments(&mut source, arguments);
                 source
             }
+            Type::PathWithArguments(path, arguments) => {
+                Self::namespace_segments_with_arguments(path, arguments, false).join("::")
+            }
+            Type::AssociatedPath(path, qualification) => {
+                self.qualified_path_to_string(path, qualification, false)
+            }
+            Type::TraitObject { dyn_token, bounds } => {
+                let prefix = if *dyn_token { "dyn " } else { "" };
+                format!("{prefix}{}", self.ordered_type_bounds_to_string(bounds))
+            }
+            Type::ImplTraitBounds(bounds) => format!("impl {}", self.ordered_type_bounds_to_string(bounds)),
             Type::ImplTrait {
                 trait_path,
                 associated_types,
@@ -1671,11 +1684,17 @@ impl RustCodeGenerator {
                         .join(", ");
                     source.push_str(&format!("for<{binder}> "));
                 }
-                source.push_str(&format!(
-                    "{}({args}) -> {}",
-                    callable.trait_path.join("::"),
-                    self.type_to_string(&callable.return_type)
-                ));
+                if callable.parenthesized {
+                    source.push('(');
+                }
+                source.push_str(&format!("{}({args})", callable.trait_path.join("::")));
+                if callable.explicit_return_type || *callable.return_type != Type::Unit {
+                    source.push_str(" -> ");
+                    source.push_str(&self.type_to_string(&callable.return_type));
+                }
+                if callable.parenthesized {
+                    source.push(')');
+                }
                 for bound in &callable.trailing_bounds {
                     source.push_str(" + ");
                     source.push_str(&callable_bound_to_string(bound));
@@ -1716,10 +1735,45 @@ impl RustCodeGenerator {
                 self.type_to_string(inner),
                 Self::new().generate_expression_code(size),
             ),
+            Type::Parenthesized(inner) => format!("({})", self.type_to_string(inner)),
+            Type::Macro(invocation) => {
+                let mut generator = Self::new();
+                generator.generate_macro_invocation(invocation);
+                generator.buffer
+            }
             Type::Unit => "()".to_string(),
             Type::Never => "!".to_string(),
             Type::Infer => "_".to_string(),
         }
+    }
+
+    fn ordered_type_bounds_to_string(&self, bounds: &[TypeBound]) -> String {
+        bounds.iter().map(|bound| self.generate_type_bound_code(bound))
+            .collect::<Vec<_>>().join(" + ")
+    }
+
+    fn qualified_path_to_string(
+        &self,
+        path: &[String],
+        qualification: &PathQualification,
+        turbofish: bool,
+    ) -> String {
+        let mut source = String::from("<");
+        match &qualification.self_type {
+            QualifiedSelfType::Type(ty) => source.push_str(&self.type_to_string(ty)),
+            QualifiedSelfType::Verbatim(written) => source.push_str(written),
+        }
+        if let Some(trait_path) = &qualification.trait_path {
+            source.push_str(" as ");
+            source.push_str(&Self::namespace_segments_with_arguments(
+                trait_path, &qualification.trait_arguments, false,
+            ).join("::"));
+        }
+        source.push_str(">::");
+        source.push_str(&Self::namespace_segments_with_arguments(
+            path, &qualification.associated_arguments, turbofish,
+        ).join("::"));
+        source
     }
 
     fn visibility(&self, vis: &Visibility) -> String {

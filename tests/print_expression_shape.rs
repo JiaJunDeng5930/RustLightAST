@@ -266,6 +266,8 @@ fn callable_target() -> Type {
         "Rc".to_string(),
         vec![Type::CallableTrait(CallableTraitType {
             qualifier: CallableTraitQualifier::Dyn,
+            parenthesized: false,
+            explicit_return_type: true,
             trait_path: vec!["Fn".to_string()],
             args: vec![Type::Named("Int".to_string())],
             return_type: Box::new(Type::Named("Int".to_string())),

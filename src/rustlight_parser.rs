@@ -504,6 +504,7 @@ fn convert_impl_item(item: &SynImplItem) -> syn::Result<ImplItem> {
     }
 }
 
+/// Convert a parsed import at the Rust source boundary.
 fn convert_use(item: &syn::ItemUse) -> UseStatement {
     UseStatement {
         tree: convert_use_tree(&item.tree),
@@ -539,16 +540,13 @@ fn convert_return_type(output: &ReturnType) -> syn::Result<Type> {
 /// Convert a parsed Rust type into the same model used in declarations.
 fn convert_type(ty: &SynType) -> syn::Result<Type> {
     match ty {
-        SynType::Path(type_path) => {
-            // DEFENSE: dropping qself changes which associated type is named.
-            if type_path.qself.is_some() {
-                return Err(syn::Error::new_spanned(
-                    type_path,
-                    "qualified associated type is unsupported",
-                ));
+        SynType::Path(type_path) => match &type_path.qself {
+            Some(qualification) => {
+                let (path, qualification) = convert_qualified_path(&type_path.path, qualification, false);
+                Ok(Type::AssociatedPath(path, qualification))
             }
-            convert_type_path(&type_path.path)
-        }
+            None => convert_type_path(&type_path.path),
+        },
         SynType::BareFn(function) => convert_bare_fn(function),
         SynType::Ptr(pointer) => Ok(Type::RawPointer(
             Box::new(convert_type(&pointer.elem)?),
@@ -585,9 +583,14 @@ fn convert_type(ty: &SynType) -> syn::Result<Type> {
             Box::new(convert_type(elem)?),
             Box::new(convert_expr(len)?),
         )),
-        SynType::TraitObject(TypeTraitObject { bounds, .. }) => {
-            convert_callable_trait_bounds(bounds.iter(), CallableTraitQualifier::Dyn)
-        }
+        SynType::TraitObject(TypeTraitObject { dyn_token, bounds }) =>
+            if dyn_token.is_some() {
+                convert_callable_trait_bounds(bounds.iter(), CallableTraitQualifier::Dyn).or_else(|_| {
+                    Ok(Type::TraitObject { dyn_token: true, bounds: bounds.iter().map(convert_type_bound).collect() })
+                })
+            } else {
+                Ok(Type::TraitObject { dyn_token: false, bounds: bounds.iter().map(convert_type_bound).collect() })
+            },
         SynType::ImplTrait(TypeImplTrait { bounds, .. }) => {
             if let (Some(TypeParamBound::Trait(bound)), 1) = (bounds.first(), bounds.len()) {
                 if let Some(opaque) = convert_associated_impl_trait(bound)? {
@@ -595,12 +598,13 @@ fn convert_type(ty: &SynType) -> syn::Result<Type> {
                 }
             }
             convert_callable_trait_bounds(bounds.iter(), CallableTraitQualifier::Impl)
+                .or_else(|_| Ok(Type::ImplTraitBounds(bounds.iter().map(convert_type_bound).collect())))
         }
         SynType::Never(_) => Ok(Type::Never),
         SynType::Infer(_) => Ok(Type::Infer),
-        SynType::Paren(TypeParen { elem, .. }) | SynType::Group(TypeGroup { elem, .. }) => {
-            convert_type(elem)
-        }
+        SynType::Paren(TypeParen { elem, .. }) => Ok(Type::Parenthesized(Box::new(convert_type(elem)?))),
+        SynType::Group(TypeGroup { elem, .. }) => convert_type(elem),
+        SynType::Macro(mac) => Ok(Type::Macro(Box::new(convert_macro_invocation(&mac.mac)))),
         other => Err(syn::Error::new_spanned(
             other,
             "unsupported type syntax in RustLightAST parser",
@@ -802,6 +806,8 @@ fn convert_callable_trait_bound(
         .collect();
     Ok(Type::CallableTrait(CallableTraitType {
         qualifier,
+        parenthesized: trait_bound.paren_token.is_some(),
+        explicit_return_type: matches!(output, ReturnType::Type(..)),
         trait_path,
         args,
         return_type,
@@ -867,18 +873,21 @@ fn convert_type_path(path: &syn::Path) -> syn::Result<Type> {
         .segments
         .last()
         .ok_or_else(|| syn::Error::new_spanned(path, "empty path"))?;
-    // DEFENSE: `Outer<T>::Item` would lose the arguments that select `Item`.
-    if let Some(segment) = path
+    if path
         .segments
         .iter()
         .rev()
         .skip(1)
-        .find(|segment| !segment.arguments.is_none())
+        .any(|segment| !segment.arguments.is_none())
     {
-        return Err(syn::Error::new_spanned(
-            segment,
-            "generic arguments on a non-final type path segment are unsupported",
-        ));
+        let root = usize::from(path.leading_colon.is_some());
+        let mut arguments = Vec::new();
+        let segments = path.leading_colon.iter().map(|_| String::new())
+            .chain(path.segments.iter().enumerate().map(|(index, segment)| {
+                convert_qualified_segment(segment, index + root, false, &mut arguments)
+            }))
+            .collect();
+        return Ok(Type::PathWithArguments(segments, arguments));
     }
     let generic_args = match &last.arguments {
         PathArguments::None => Vec::new(),
@@ -918,7 +927,13 @@ fn convert_block(block: &syn::Block) -> syn::Result<Block> {
     for (index, stmt) in block.stmts.iter().enumerate() {
         match stmt {
             Stmt::Local(local) => stmts.push(convert_local(local)?),
-            Stmt::Item(item) => stmts.push(Statement::Item(Box::new(convert_local_item(item)))),
+            Stmt::Item(SynItem::Macro(item)) => stmts.push(Statement::Macro(crate::MacroStmt {
+                attrs: item.attrs.iter().map(attribute_to_raw_source).collect(),
+                name: item.ident.as_ref().map(ToString::to_string),
+                invocation: convert_macro_invocation(&item.mac),
+                semicolon: item.semi_token.is_some(),
+            })),
+            Stmt::Item(item) => stmts.push(Statement::Item(Box::new(convert_item_preserving(item)))),
             Stmt::Expr(expr, semi) => {
                 if semi.is_some() || index + 1 != block.stmts.len() {
                     stmts.push(Statement::Expr(convert_expr(expr)?));
@@ -932,6 +947,7 @@ fn convert_block(block: &syn::Block) -> syn::Result<Block> {
                     .iter()
                     .map(|attr| attr.to_token_stream().to_string())
                     .collect(),
+                name: None,
                 invocation: convert_macro_invocation(&statement.mac),
                 semicolon: statement.semi_token.is_some(),
             })),
@@ -954,13 +970,6 @@ fn convert_macro_invocation(mac: &syn::Macro) -> crate::MacroInvocation {
             syn::MacroDelimiter::Bracket(_) => crate::MacroDelimiter::Bracket,
         },
         tokens: mac.tokens.to_string(),
-    }
-}
-
-fn convert_local_item(item: &SynItem) -> Item {
-    match item {
-        SynItem::Fn(_) => convert_item_preserving(item),
-        _ => Item::Raw(normalize_tokens(item.to_token_stream())),
     }
 }
 
@@ -1068,22 +1077,19 @@ fn convert_expr(expr: &syn::Expr) -> syn::Result<Expr> {
                 .map(|label| label.name.ident.to_string()),
         )),
         syn::Expr::While(expr) if expr.attrs.is_empty() => {
-            let condition = match expr.cond.as_ref() {
-                syn::Expr::Let(condition) if condition.attrs.is_empty() => Expr::Let {
-                    pattern: pattern::convert_pattern(&condition.pat)?,
-                    value: Box::new(convert_expr(&condition.expr)?),
-                },
-                condition => convert_expr(condition)?,
-            };
             Ok(Expr::While {
                 label: expr
                     .label
                     .as_ref()
                     .map(|label| label.name.ident.to_string()),
-                condition: Box::new(condition),
+                condition: Box::new(convert_expr(&expr.cond)?),
                 body: convert_block(&expr.body)?,
             })
         }
+        syn::Expr::Let(condition) if condition.attrs.is_empty() => Ok(Expr::Let {
+            pattern: pattern::convert_pattern(&condition.pat)?,
+            value: Box::new(convert_expr(&condition.expr)?),
+        }),
         syn::Expr::ForLoop(expr) if expr.attrs.is_empty() => Ok(Expr::For {
             label: expr
                 .label
@@ -1371,40 +1377,8 @@ fn convert_match_arm(arm: &syn::Arm) -> syn::Result<MatchArm> {
 
 fn convert_expr_path(expr_path: &ExprPath) -> syn::Result<Expr> {
     if let Some(qualification) = &expr_path.qself {
-        let path = &expr_path.path;
-        let trait_path = qualification.as_token.as_ref().map(|_| {
-            path.leading_colon
-                .iter()
-                .map(|_| String::new())
-                .chain(
-                    path.segments
-                        .iter()
-                        .take(qualification.position)
-                        .map(path_segment_source),
-                )
-                .collect()
-        });
-        let associated_path = path
-            .segments
-            .iter()
-            .skip(qualification.position)
-            .map(path_segment_source)
-            .collect();
-        let self_type = match convert_type(&qualification.ty) {
-            Ok(ty) => crate::QualifiedSelfType::Type(Box::new(ty)),
-            // DEFENSE: qualified expressions previously preserved unmodeled
-            // self types such as `<Model<T>::Item>::VALUE` in their original syntax.
-            Err(_) => {
-                crate::QualifiedSelfType::Verbatim(qualification.ty.to_token_stream().to_string())
-            }
-        };
-        return Ok(Expr::Path(
-            associated_path,
-            PathType::Qualified(crate::PathQualification {
-                self_type,
-                trait_path,
-            }),
-        ));
+        let (path, qualification) = convert_qualified_path(&expr_path.path, qualification, true);
+        return Ok(Expr::Path(path, PathType::Qualified(qualification)));
     }
 
     let path = convert_namespace_path(&expr_path.path);
@@ -1416,6 +1390,63 @@ fn convert_expr_path(expr_path: &ExprPath) -> syn::Result<Expr> {
     } else {
         Ok(Expr::Path(path.segments, PathType::NamespaceWithTypeArguments(path.arguments)))
     }
+}
+
+fn convert_qualified_path(
+    path: &syn::Path,
+    qualification: &syn::QSelf,
+    turbofish: bool,
+) -> (Vec<String>, crate::PathQualification) {
+        let mut trait_arguments = Vec::new();
+        let mut associated_arguments = Vec::new();
+        let root = usize::from(path.leading_colon.is_some());
+        let trait_path = qualification.as_token.as_ref().map(|_| {
+            path.leading_colon.iter().map(|_| String::new()).chain(
+                path.segments.iter().take(qualification.position).enumerate().map(
+                    |(index, segment)| convert_qualified_segment(
+                        segment, index + root, false, &mut trait_arguments,
+                    ),
+                ),
+            ).collect()
+        });
+        let associated_path = path.segments.iter().skip(qualification.position).enumerate()
+            .map(|(index, segment)| {
+                convert_qualified_segment(segment, index, turbofish, &mut associated_arguments)
+            }).collect();
+        let self_type = match convert_type(&qualification.ty) {
+            Ok(ty) => crate::QualifiedSelfType::Type(Box::new(ty)),
+            // DEFENSE: qualified expressions previously preserved unmodeled
+            // self types such as `<Model<T>::Item>::VALUE` in their original syntax.
+            Err(_) => {
+                crate::QualifiedSelfType::Verbatim(qualification.ty.to_token_stream().to_string())
+            }
+        };
+        (
+            associated_path,
+            crate::PathQualification {
+                self_type,
+                trait_path,
+                trait_arguments,
+                associated_arguments,
+            },
+        )
+}
+
+fn convert_qualified_segment(
+    segment: &syn::PathSegment,
+    index: usize,
+    turbofish: bool,
+    arguments: &mut Vec<crate::PathTypeArguments>,
+) -> String {
+    if let PathArguments::AngleBracketed(source) = &segment.arguments {
+        if source.colon2_token.is_some() == turbofish {
+            if let Ok(values) = convert_generic_arguments(source) {
+                arguments.push(crate::PathTypeArguments { segment: index, arguments: values });
+                return segment.ident.to_string();
+            }
+        }
+    }
+    path_segment_source(segment)
 }
 
 fn convert_namespace_path(path: &syn::Path) -> crate::PatternPath {

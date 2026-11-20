@@ -222,12 +222,17 @@ fn total() -> u32 {
                 _ => None,
             })
             .unwrap();
+        let Some(Statement::Macro(definition)) = function.body.stmts.first() else {
+            panic!("expected a local macro definition");
+        };
+        assert_eq!(definition.name.as_deref(), Some("zero"));
+        assert_eq!(definition.invocation.path, ["macro_rules"]);
         let statements: Vec<_> = function
             .body
             .stmts
             .iter()
             .filter_map(|statement| match statement {
-                Statement::Macro(statement) => Some(statement),
+                Statement::Macro(statement) if statement.name.is_none() => Some(statement),
                 _ => None,
             })
             .collect();

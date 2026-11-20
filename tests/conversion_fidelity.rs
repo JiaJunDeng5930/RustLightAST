@@ -123,18 +123,38 @@ pub fn bytes(x: u8) -> [u8; 3] {
 
 
 #[test]
-fn preserves_modeled_and_unmodeled_qualified_self_paths() {
+fn preserves_qualified_self_paths() {
     let source = r#"
 fn one_bigint() -> BigInt { <BigInt as One>::one() }
+fn qualified<T>() {
+    <T as ::Traits::Make<'static, u8, 3>>::value::<u16, { 1 + 1 }>();
+}
+
 fn values() -> (usize, usize) {
     (<Model<3>>::VALUE, <Model<'static>::Item>::VALUE)
 }
 "#;
-    let (_, printed) = parse_and_print(source);
+    let (module, printed) = parse_and_print(source);
+    let Item::Function(function) = &module.items[1] else {
+        panic!("expected a modeled function");
+    };
+    let [Statement::Expr(Expr::Call(callee, _))] = function.body.stmts.as_slice() else {
+        panic!("expected a call");
+    };
+    let Expr::Path(member, rustlightast::PathType::Qualified(path)) = callee.as_ref() else {
+        panic!("expected a qualified callee");
+    };
+    assert_eq!(path.trait_path.as_deref().unwrap(), ["", "Traits", "Make"]);
+    assert_eq!(path.trait_arguments[0].segment, 2);
+    assert_eq!(path.trait_arguments[0].arguments.len(), 3);
+    assert_eq!(member, &["value"]);
+    assert_eq!(path.associated_arguments[0].segment, 0);
+    assert_eq!(path.associated_arguments[0].arguments.len(), 2);
     syn::parse_file(&printed).unwrap();
     let compact: String = printed.split_whitespace().collect();
     for path in [
         "<BigIntasOne>::one()",
+        "<Tas::Traits::Make<'static,u8,3>>::value::<u16,{1+1}>()",
         "<Model<3>>::VALUE",
         "<Model<'static>::Item>::VALUE",
     ] {
@@ -201,6 +221,36 @@ pub fn run(value: &u8) -> (u8, i32, i32) {
     }
     let (_, reprinted) = parse_and_print(&printed);
     assert_eq!(printed, reprinted);
+}
+
+#[test]
+fn preserves_type_paths_bounds_and_grouping() {
+    let source = r#"
+type Assoc<T> = <T as ::Traits::Make<u8>>::Item<'static>;
+type Selected<T> = Model<T>::Item;
+type Object<'a> = &'a (dyn ::std::fmt::Debug + Send + 'a);
+type Callable = dyn Fn(u8);
+type Macro = opaque_type!(u8);
+fn produces() -> impl Send + Sync { () }
+"#;
+    let (module, printed) = parse_and_print(source);
+    let alias = |index| match &module.items[index] {
+        Item::TypeAlias(alias) => &alias.target,
+        other => panic!("expected a modeled alias, got {other:?}"),
+    };
+    assert!(matches!(alias(0), Type::AssociatedPath(path, qualification)
+        if path == &["Item"] && qualification.trait_arguments[0].segment == 2));
+    assert!(matches!(alias(1), Type::PathWithArguments(path, arguments)
+        if path == &["Model", "Item"] && arguments[0].segment == 0));
+    assert!(matches!(alias(2), Type::Reference(target, _, false)
+        if matches!(target.as_ref(), Type::Parenthesized(inner)
+            if matches!(inner.as_ref(), Type::TraitObject { dyn_token: true, bounds } if bounds.len() == 3))));
+    assert!(matches!(alias(3), Type::CallableTrait(callable) if !callable.explicit_return_type));
+    assert!(matches!(alias(4), Type::Macro(mac) if mac.path == ["opaque_type"]));
+    assert!(matches!(&module.items[5], Item::Function(function)
+        if matches!(&function.return_type, Type::ImplTraitBounds(bounds) if bounds.len() == 2)));
+    let (reparsed, _) = parse_and_print(&printed);
+    assert_eq!(module.items, reparsed.items);
 }
 
 #[test]

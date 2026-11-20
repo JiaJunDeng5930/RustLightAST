@@ -160,18 +160,25 @@ pub enum Type {
     Named(String),                    // i32, String
     /// A named type applied to arguments, such as `HashMap<K, V>`.
     Generic(String, Vec<GenericArgument>),
+    /// A type path with arguments on a non-final segment.
+    PathWithArguments(Vec<String>, Vec<PathTypeArguments>),
+    AssociatedPath(Vec<String>, PathQualification),
     CallableTrait(CallableTraitType), // dyn Fn(A) -> B / impl Fn(A) -> B
+    TraitObject { dyn_token: bool, bounds: Vec<TypeBound> },
     BareFn(Box<BareFnType>),
     RawPointer(Box<Type>, PointerKind),
     ImplTrait {
         trait_path: Vec<String>,
         associated_types: Vec<AssociatedTypeBinding>,
     },
+    ImplTraitBounds(Vec<TypeBound>),
     /// Reference target, optional explicit lifetime, and mutability.
     Reference(Box<Type>, Option<String>, bool),
     Tuple(Vec<Type>),        // (T1, T2)
     Slice(Box<Type>),        // [T]
     Array(Box<Type>, Box<Expr>), // [T; N] fixed-size array
+    Parenthesized(Box<Type>),
+    Macro(Box<MacroInvocation>),
     Unit,                    // ()
     Never,                   // !
     Infer,                   // _
@@ -246,6 +253,8 @@ pub struct AssociatedTypeBinding {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CallableTraitType {
     pub qualifier: CallableTraitQualifier,
+    pub parenthesized: bool,
+    pub explicit_return_type: bool,
     /// Namespace segments of the callable trait, with an empty first segment
     /// for an absolute path.
     pub trait_path: Vec<String>,
@@ -323,11 +332,13 @@ pub struct PathTypeArguments {
     pub arguments: Vec<GenericArgument>,
 }
 
-/// The `<T>` or `<T as Trait>` prefix of an associated expression path.
+/// The `<T>` or `<T as Trait>` prefix of an associated path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathQualification {
     pub self_type: QualifiedSelfType,
     pub trait_path: Option<Vec<String>>,
+    pub trait_arguments: Vec<PathTypeArguments>,
+    pub associated_arguments: Vec<PathTypeArguments>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -605,6 +616,8 @@ pub struct MacroExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MacroStmt {
     pub attrs: Vec<String>,
+    /// The identifier between `!` and the delimiter in a local macro definition.
+    pub name: Option<String>,
     pub invocation: MacroInvocation,
     pub semicolon: bool,
 }

@@ -10,7 +10,8 @@ impl RustCodeGenerator {
     }
 
     fn generate_pattern_path(&mut self, path: &PatternPath) {
-        let segments = Self::namespace_segments_with_arguments(&path.segments, &path.arguments);
+        let segments =
+            Self::namespace_segments_with_arguments(&path.segments, &path.arguments, true);
         self.generate_path(&segments);
     }
 
