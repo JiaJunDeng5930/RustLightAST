@@ -728,7 +728,7 @@ impl MacroInvocation {
 
     /// The paths of nested invocations if the input contains no attributes
     /// or implementation tokens.
-    pub(crate) fn nested_macro_paths(&self) -> Option<&[Vec<String>]> {
+    pub fn nested_macro_paths(&self) -> Option<&[Vec<String>]> {
         self.tokens.nested_macro_paths()
     }
 
@@ -750,7 +750,7 @@ impl MacroInvocation {
 
     /// Implicit formatting captures when the format string follows the given
     /// number of leading operands.
-    pub(crate) fn format_captures(&self, leading_operands: usize) -> Option<&[String]> {
+    pub fn format_captures(&self, leading_operands: usize) -> Option<&[String]> {
         self.tokens.format_captures(leading_operands)
     }
 }

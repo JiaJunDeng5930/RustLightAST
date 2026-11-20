@@ -298,7 +298,73 @@ fn total() -> u32 {
     }
 }
 
+#[test]
+fn macro_expression_retains_its_path_and_input_tokens() {
+    use rustlightast::{Expr, MacroDelimiter};
 
+    let source = r##"fn message() { let _value = ::example::message![r#"a "quote""#, nested!(1)]; }"##;
+    let module = parse_rust_source(source, "macros").unwrap();
+    let Item::Function(function) = &module.items[0] else {
+        panic!("expected function");
+    };
+    let rustlightast::Statement::Let(binding) = &function.body.stmts[0] else {
+        panic!("expected let binding");
+    };
+    let Some(Expr::Macro(mac)) = binding.init.as_ref() else {
+        panic!("expected macro expression");
+    };
+    assert_eq!(mac.invocation.path, ["", "example", "message"]);
+    assert_eq!(mac.invocation.delimiter, MacroDelimiter::Bracket);
+    let arguments = mac.invocation.expression_arguments().unwrap();
+    assert!(matches!(&arguments[0], Expr::Literal(literal)
+        if literal.string_value() == Some("a \"quote\"")));
+    assert!(matches!(&arguments[1], Expr::Macro(nested) if nested.invocation.path == ["nested"]));
+    assert_eq!(
+        mac.invocation.nested_macro_paths().unwrap(),
+        &[vec!["nested".to_owned()]],
+    );
+    let printed = RustCodeGenerator::new().generate_module_code(&module);
+    assert_eq!(parse_rust_source(&printed, "macros").unwrap(), module);
+}
+
+#[test]
+fn modeled_macro_arguments_supply_paths_and_printed_input() {
+    use quote::ToTokens;
+    use rustlightast::{MacroInput, ModeledMacroInput};
+
+    let mut module = parse_rust_source(
+        "fn f() { let _ = vec![x]; let _ = outer!(inner!(x)); }",
+        "macros",
+    )
+    .unwrap();
+    let [Item::Function(function)] = module.items.as_mut_slice() else {
+        panic!("expected one function");
+    };
+    let [Statement::Let(vector), Statement::Let(nested)] = function.body.stmts.as_mut_slice() else {
+        panic!("expected two macro bindings");
+    };
+    let nested = nested.init.clone().unwrap();
+    let Expr::Macro(vector) = vector.init.as_mut().unwrap() else {
+        panic!("expected vector macro");
+    };
+    vector.invocation.tokens = MacroInput::from_model(
+        ModeledMacroInput::Expressions {
+            arguments: vec![nested],
+            format_captures: Default::default(),
+        },
+        true,
+    )
+    .unwrap();
+    assert!(vector.invocation.tokens.written_source().is_none());
+    assert_eq!(
+        vector.invocation.nested_macro_paths().unwrap(),
+        &[vec!["outer".to_owned()], vec!["inner".to_owned()]],
+    );
+    let printed = RustCodeGenerator::new().generate_module_code(&module);
+    let expected = "fn f() { let _ = vec![outer!(inner!(x)),]; let _ = outer!(inner!(x)); }";
+    let tokens = |source: &str| syn::parse_file(source).unwrap().to_token_stream().to_string();
+    assert_eq!(tokens(&printed), tokens(expected));
+}
 
 #[test]
 fn macro_items_match_identifier_arguments_and_roundtrip() {
@@ -345,6 +411,51 @@ macro_rules! changes_trait {
     assert_eq!(tokens(source), tokens(&printed));
 }
 
+#[test]
+fn macro_input_exposes_supported_operand_syntax() {
+    let source = r#"
+thread_local! {
+    #[cfg(test)]
+    pub(crate) static COUNT: u64 = const { 1 };
+}
+fn input(value: u64, count: usize) {
+    let _ = vec![value; count];
+    let _ = matches!(value, 1);
+    let _ = matches!(Some(value), Some(found) if found > 0);
+    let _ = format!("{value:04} {value} {{ignored}}");
+    assert!(value > 0, "{value}");
+    let _ = format!("{value:width$}");
+}
+"#;
+    let module = parse_rust_source(source, "macro_inputs").unwrap();
+    let [Item::Macro(thread), Item::Function(function)] = module.items.as_slice() else {
+        panic!("expected an item macro and a function");
+    };
+    let [count] = thread.invocation.thread_local_statics().unwrap() else {
+        panic!("expected one static declaration");
+    };
+    assert_eq!(count.name, "COUNT");
+    assert_eq!(count.attrs[0].unqualified_name(), Some("cfg"));
+    assert!(count.ty.is_some());
+    let invocations: Vec<_> = function.body.stmts.iter().map(|statement| {
+        match statement {
+            Statement::Let(binding) => match binding.init.as_ref() {
+                Some(Expr::Macro(mac)) => &mac.invocation,
+                _ => panic!("expected a macro expression"),
+            },
+            Statement::Macro(mac) => &mac.invocation,
+            _ => panic!("expected a macro statement"),
+        }
+    }).collect();
+    let (values, count) = invocations[0].vector_input().unwrap();
+    assert!(matches!(values, [Expr::Ident(value)] if value == "value"));
+    assert!(matches!(count, Some(Expr::Ident(count)) if count == "count"));
+    assert!(invocations[1].match_input().is_some_and(|input| input.guard.is_none()));
+    assert!(invocations[2].match_input().is_some_and(|input| input.guard.is_some()));
+    assert_eq!(invocations[3].format_captures(0).unwrap(), ["value"]);
+    assert_eq!(invocations[4].format_captures(1).unwrap(), ["value"]);
+    assert!(invocations[5].format_captures(0).is_none());
+}
 
 #[test]
 fn loop_labels_roundtrip() {

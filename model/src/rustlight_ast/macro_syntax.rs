@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use super::{Attribute, Expr, FunctionDef, MacroInvocation, Pattern, Type, Visibility};
+use super::{Attribute, Expr, FunctionDef, Item, MacroInvocation, Pattern, Type, Visibility};
+use crate::visit::{self, Visit};
 
 /// Macro input as written at ingress, or as constructed by an AST rewrite.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +65,53 @@ impl MacroInput {
             syntax_size: token_count,
             nested_macro_paths: nested_macro_paths.map(Into::into),
         }
+    }
+
+    /// Construct editable macro arguments and derive facts directly from the AST.
+    pub fn from_model(input: ModeledMacroInput, trailing_comma: bool) -> Option<Self> {
+        let mut facts = ModeledInputFacts::default();
+        match &input {
+            ModeledMacroInput::Expressions { arguments, .. } => {
+                for argument in arguments {
+                    facts.visit_expr(argument);
+                }
+            }
+            ModeledMacroInput::Repeat(value, count) => {
+                facts.visit_expr(value);
+                facts.visit_expr(count);
+            }
+            ModeledMacroInput::Match(input) => {
+                facts.visit_expr(&input.value);
+                facts.visit_pattern(&input.pattern);
+                if let Some(guard) = &input.guard {
+                    facts.visit_expr(guard);
+                }
+            }
+            ModeledMacroInput::Statics(items) => {
+                for item in items {
+                    facts.visit_spelling(&item.name);
+                    for attribute in &item.attrs {
+                        facts.visit_attribute(attribute);
+                    }
+                    if let Visibility::Restricted(path) = &item.visibility {
+                        for segment in path {
+                            facts.visit_spelling(segment);
+                        }
+                    }
+                    facts.visit_type(item.ty.as_ref()?);
+                    facts.visit_expr(item.initializer.as_ref()?);
+                }
+            }
+        }
+        Some(Self {
+            syntax: MacroInputSyntax::Modeled(Arc::new(ModeledMacroArguments {
+                input,
+                trailing_comma,
+            })),
+            token_identifiers: facts.identifiers.into(),
+            syntax_size: facts.size,
+            nested_macro_paths: (!facts.opaque).then(|| facts.paths.into()),
+        })
     }
 
     pub fn with_specialized_syntax(mut self, specialized: SpecializedMacroInput) -> Self {
@@ -184,6 +232,84 @@ impl MacroInput {
             MacroInputSyntax::Written { identifiers, .. } => identifiers.as_ref(),
             MacroInputSyntax::Modeled(_) => None,
         }
+    }
+}
+
+#[derive(Default)]
+struct ModeledInputFacts {
+    identifiers: Vec<String>,
+    size: usize,
+    paths: Vec<Vec<String>>,
+    opaque: bool,
+}
+
+impl<'ast> Visit<'ast> for ModeledInputFacts {
+    fn visit_spelling(&mut self, spelling: &'ast str) {
+        for word in spelling.split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '#'
+        }) {
+            if word.starts_with(|character: char| character == '_' || character.is_alphabetic()) {
+                self.identifiers.push(word.to_owned());
+                self.opaque |= matches!(word, "impl" | "derive");
+                self.size += 1;
+            }
+        }
+    }
+
+    fn visit_macro_invocation(&mut self, invocation: &'ast MacroInvocation) {
+        for segment in &invocation.path {
+            self.visit_spelling(segment);
+        }
+        self.paths.push(invocation.path.clone());
+        self.identifiers.extend_from_slice(invocation.tokens.identifiers_in_tokens());
+        self.size += invocation.tokens.syntax_size();
+        if let Some(paths) = invocation.nested_macro_paths() {
+            self.paths.extend_from_slice(paths);
+        } else {
+            self.opaque = true;
+        }
+    }
+
+    fn visit_item(&mut self, item: &'ast Item) {
+        self.opaque |= matches!(item, Item::Impl(_));
+        visit::walk_item(self, item);
+    }
+
+    fn visit_expr(&mut self, expr: &'ast Expr) {
+        self.size += 1;
+        if !matches!(expr, Expr::Literal(_)) {
+            visit::walk_expr(self, expr);
+        }
+    }
+
+    fn visit_type(&mut self, ty: &'ast Type) {
+        self.size += 1;
+        self.opaque |= matches!(ty, Type::ImplTrait { .. } | Type::ImplTraitBounds(_));
+        self.opaque |= matches!(ty, Type::CallableTrait(callable)
+            if callable.qualifier == super::CallableTraitQualifier::Impl);
+        visit::walk_type(self, ty);
+    }
+
+    fn visit_pattern(&mut self, pattern: &'ast Pattern) {
+        self.size += 1;
+        if !matches!(pattern, Pattern::Literal(_)) {
+            visit::walk_pattern(self, pattern);
+        }
+    }
+
+    fn visit_attribute(&mut self, attribute: &'ast Attribute) {
+        self.opaque = true;
+        visit::walk_attribute(self, attribute);
+    }
+
+    fn visit_written_attribute(&mut self, source: &'ast str) {
+        self.opaque = true;
+        self.visit_spelling(source);
+    }
+
+    fn visit_opaque(&mut self, source: &'ast str) {
+        self.opaque = true;
+        self.visit_spelling(source);
     }
 }
 
