@@ -585,7 +585,7 @@ fn adding_a_derive_keeps_existing_names_in_their_attribute_groups() {
     let Item::Struct(item) = &mut module.items[0] else {
         panic!("expected structure");
     };
-    DataAttribute::push_derive(&mut item.attrs, "Copy".to_owned());
+    DataAttribute::push_derive(&mut item.attrs, vec!["Copy".to_owned()]);
 
     let printed = RustCodeGenerator::new().generate_module_code(&module);
     let actual = syn::parse_str::<syn::ItemStruct>(&printed).unwrap();

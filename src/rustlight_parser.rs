@@ -1530,6 +1530,10 @@ fn convert_literal(lit: &Lit) -> syn::Result<Literal> {
             spelling: byte.to_token_stream().to_string(),
             value: byte.value(),
         }),
+        Lit::Char(character) => Ok(Literal::CharToken {
+            spelling: character.to_token_stream().to_string(),
+            value: character.value(),
+        }),
         Lit::Float(float) => {
             let token = float.to_string();
             let suffix = float.suffix();
@@ -1729,23 +1733,28 @@ fn convert_attributes(attrs: &[syn::Attribute]) -> Vec<Attribute> {
     attrs.iter().map(convert_attribute).collect()
 }
 
+/// Lower data attributes independently of the fields and variants they annotate.
 fn convert_data_attributes(attrs: &[syn::Attribute]) -> Vec<crate::DataAttribute> {
-    attrs
-        .iter()
-        .map(|attr| {
-            if let Some(paths) = derive_paths(attr) {
-                crate::DataAttribute::Derive {
-                    trailing_comma: paths.trailing_punct(),
-                    names: paths
-                        .into_iter()
-                        .map(|path| normalize_tokens(path.to_token_stream()))
-                        .collect(),
-                }
-            } else {
-                crate::DataAttribute::Other(convert_attribute(attr))
-            }
-        })
-        .collect()
+    attrs.iter().map(convert_data_attribute).collect()
+}
+
+fn convert_data_attribute(attr: &syn::Attribute) -> crate::DataAttribute {
+    let Some(paths) = derive_paths(attr) else {
+        return crate::DataAttribute::Other(convert_attribute(attr));
+    };
+    crate::DataAttribute::Derive {
+        trailing_comma: paths.trailing_punct(),
+        paths: paths
+            .into_iter()
+            .map(|path| {
+                path.leading_colon
+                    .iter()
+                    .map(|_| String::new())
+                    .chain(path.segments.iter().map(|segment| segment.ident.to_string()))
+                    .collect()
+            })
+            .collect(),
+    }
 }
 
 fn convert_attribute(attr: &syn::Attribute) -> Attribute {
@@ -1790,8 +1799,10 @@ fn derive_paths(
     if !list.path.is_ident("derive") || !matches!(list.delimiter, syn::MacroDelimiter::Paren(_)) {
         return None;
     }
-    list.parse_args_with(syn::punctuated::Punctuated::parse_terminated)
-        .ok()
+    let paths = list.parse_args_with(syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated).ok()?;
+    paths.iter().all(|path| {
+        path.segments.iter().all(|segment| matches!(segment.arguments, PathArguments::None))
+    }).then_some(paths)
 }
 
 fn normalize_tokens(tokens: TokenStream) -> String {

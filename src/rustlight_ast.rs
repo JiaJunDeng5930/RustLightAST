@@ -549,6 +549,8 @@ pub enum Literal {
     },
     /// A byte token, retaining its exact escape spelling.
     Byte { spelling: String, value: u8 },
+    /// A character token, retaining its exact escape spelling.
+    CharToken { spelling: String, value: char },
     /// A floating-point token with its original mantissa, exponent and suffix.
     FloatToken { digits: String, suffix: Option<String> },
     Int(i64),
@@ -647,33 +649,23 @@ impl Attribute {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DataAttribute {
     Derive {
-        names: Vec<String>,
+        /// Paths use an empty first segment for a leading `::`.
+        paths: Vec<Vec<String>>,
         trailing_comma: bool,
     },
     Other(Attribute),
 }
 
 impl DataAttribute {
-    pub fn derive_names(attrs: &[Self]) -> impl Iterator<Item = &str> {
-        attrs
-            .iter()
-            .flat_map(|attr| match attr {
-                Self::Derive { names, .. } => names.as_slice(),
-                Self::Other(_) => &[],
-            })
-            .map(String::as_str)
-    }
-
-    /// Append a name to the last derive attribute, creating a group if needed.
-    pub fn push_derive(attrs: &mut Vec<Self>, name: String) {
-        if let Some(names) = attrs.iter_mut().rev().find_map(|attr| match attr {
-            Self::Derive { names, .. } => Some(names),
+    pub fn push_derive(attrs: &mut Vec<Self>, path: Vec<String>) {
+        if let Some(paths) = attrs.iter_mut().rev().find_map(|attr| match attr {
+            Self::Derive { paths, .. } => Some(paths),
             Self::Other(_) => None,
         }) {
-            names.push(name);
+            paths.push(path);
         } else {
             attrs.push(Self::Derive {
-                names: vec![name],
+                paths: vec![path],
                 trailing_comma: false,
             });
         }

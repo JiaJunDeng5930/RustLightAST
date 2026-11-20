@@ -1224,7 +1224,9 @@ impl RustCodeGenerator {
 
     fn generate_literal(&mut self, lit: &Literal) {
         match lit {
-            Literal::Raw(source) | Literal::Byte { spelling: source, .. } => self.write(source),
+            Literal::Raw(source)
+            | Literal::Byte { spelling: source, .. }
+            | Literal::CharToken { spelling: source, .. } => self.write(source),
             Literal::Integer { digits, suffix } | Literal::FloatToken { digits, suffix } => {
                 self.write(digits);
                 if let Some(suffix) = suffix {
@@ -1235,7 +1237,7 @@ impl RustCodeGenerator {
             Literal::Float(f) => self.write(&f.to_string()),
             Literal::Str(s) => self.write(&format!("\"{}\"", s)),
             Literal::Bool(b) => self.write(&b.to_string()),
-            Literal::Char(c) => self.write(&format!("'{}'", c)),
+            Literal::Char(c) => self.write(&format!("{c:?}")),
         }
     }
 
@@ -1372,19 +1374,17 @@ impl RustCodeGenerator {
         for attr in attrs {
             match attr {
                 DataAttribute::Other(attr) => self.generate_attribute(attr),
-                DataAttribute::Derive {
-                    names,
-                    trailing_comma,
-                } => {
-                    let suffix = if *trailing_comma && !names.is_empty() {
-                        ","
-                    } else {
-                        ""
-                    };
-                    self.writeln(&format!("#[derive({}{suffix})]", names.join(", ")));
-                }
+                DataAttribute::Derive { paths, trailing_comma } =>
+                    self.writeln(&Self::generate_derive_attribute_code(paths, *trailing_comma)),
             }
         }
+    }
+
+    /// Print a derive attribute for publication at its source range.
+    pub(crate) fn generate_derive_attribute_code(paths: &[Vec<String>], trailing_comma: bool) -> String {
+        let names = paths.iter().map(|path| path.join("::")).collect::<Vec<_>>();
+        let suffix = if trailing_comma && !paths.is_empty() { "," } else { "" };
+        format!("#[derive({}{suffix})]", names.join(", "))
     }
 
     fn generate_attributes(&mut self, attrs: &[Attribute], inner: bool) {
