@@ -43,6 +43,29 @@ pub enum Pattern {
     Parenthesized(Box<Pattern>),
 }
 
+impl Pattern {
+    /// Create an ordinary identifier binding, or a wildcard for `_`.
+    pub(crate) fn binding(name: impl Into<String>) -> Self {
+        Self::binding_with_mode(name, BindingMode::Value)
+    }
+
+    /// Create an identifier binding with its written binding modifier.
+    pub(crate) fn binding_with_mode(name: impl Into<String>, mode: BindingMode) -> Self {
+        let name = name.into();
+        if name == "_" && mode == BindingMode::Value {
+            return Self::Wildcard;
+        }
+        Self::Ident {
+            name,
+            mode,
+            subpattern: None,
+        }
+    }
+
+
+
+}
+
 /// The binding modifiers written on an identifier pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindingMode {

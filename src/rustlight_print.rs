@@ -572,11 +572,8 @@ impl RustCodeGenerator {
                 for attr in &ls.attrs {
                     self.writeln(attr);
                 }
-                self.write(&format!(
-                    "{} {}",
-                    if ls.ifmut { "let mut" } else { "let" },
-                    ls.name
-                ));
+                self.write("let ");
+                self.generate_pattern(&ls.pattern);
                 if let Some(ty) = &ls.ty {
                     self.write(&format!(": {}", self.type_to_string(ty)));
                 }
@@ -1288,7 +1285,7 @@ impl RustCodeGenerator {
     }
 
     fn generate_closure_param(&mut self, param: &ClosureParam) {
-        self.write(&param.pattern);
+        self.generate_pattern(&param.pattern);
         if let Some(ty) = &param.ty {
             self.write(": ");
             self.write(&self.type_to_string(ty));

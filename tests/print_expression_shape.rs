@@ -315,7 +315,10 @@ fn call_arguments_omit_only_redundant_parentheses() {
 fn typed_closure_printing_wraps_a_non_block_body() {
     check_shape(
         &Expr::TypedClosure(
-            vec![ClosureParam::typed("x", Type::Named("Int".into()))],
+            vec![ClosureParam::typed(Pattern::Ident {
+                name: "x".into(), mode: rustlightast::BindingMode::Value,
+                subpattern: None,
+            }, Type::Named("Int".into()))],
             Type::Named("Int".into()),
             name("x"),
             true,

@@ -270,35 +270,37 @@ pub enum CallableTraitQualifier {
 /// closure annotations without reparsing a printed `pattern: Type` string.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosureParam {
-    pub pattern: String,
+    pub pattern: Pattern,
     pub ty: Option<Type>,
 }
 
 impl ClosureParam {
-    pub fn untyped(pattern: impl Into<String>) -> Self {
-        Self {
-            pattern: pattern.into(),
-            ty: None,
-        }
+    pub fn untyped(pattern: Pattern) -> Self {
+        Self { pattern, ty: None }
     }
 
-    pub fn typed(pattern: impl Into<String>, ty: Type) -> Self {
+    pub fn typed(pattern: Pattern, ty: Type) -> Self {
         Self {
-            pattern: pattern.into(),
+            pattern,
             ty: Some(ty),
         }
     }
+
+    pub(crate) fn binding(name: impl Into<String>) -> Self {
+        Self::untyped(Pattern::binding(name))
+    }
+
 }
 
 impl From<&str> for ClosureParam {
-    fn from(pattern: &str) -> Self {
-        Self::untyped(pattern)
+    fn from(name: &str) -> Self {
+        Self::binding(name)
     }
 }
 
 impl From<String> for ClosureParam {
-    fn from(pattern: String) -> Self {
-        Self::untyped(pattern)
+    fn from(name: String) -> Self {
+        Self::binding(name)
     }
 }
 
@@ -591,8 +593,7 @@ pub enum MacroDelimiter {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LetStmt {
     pub attrs: Vec<String>,
-    pub ifmut: bool,
-    pub name: String,
+    pub pattern: Pattern,
     pub ty: Option<Type>,
     pub init: Option<Expr>,
 }

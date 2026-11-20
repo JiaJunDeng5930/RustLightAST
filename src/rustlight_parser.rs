@@ -15,7 +15,7 @@ use syn::{
     ExprCall, ExprCast, ExprClosure, ExprField, ExprGroup, ExprIf, ExprIndex, ExprLit, ExprMatch,
     ExprMethodCall, ExprParen, ExprPath, ExprReference, ExprTuple, ExprUnary, File,
     GenericArgument as SynGenericArgument, ImplItem as SynImplItem, Item as SynItem, Lit,
-    LocalInit, Meta, ParenthesizedGenericArguments, Pat, PatIdent, PathArguments, ReturnType, Stmt,
+    LocalInit, Meta, ParenthesizedGenericArguments, Pat, PathArguments, ReturnType, Stmt,
     TraitBound, Type as SynType, TypeArray, TypeGroup, TypeImplTrait, TypeParamBound, TypeParen,
     TypeReference, TypeSlice, TypeTraitObject, TypeTuple, Visibility as SynVisibility,
 };
@@ -362,6 +362,7 @@ fn convert_trait_member(member: &syn::TraitItem) -> crate::TraitMember {
     crate::TraitMember::Raw(member.to_token_stream().to_string())
 }
 
+/// Lower a parsed function signature around an already converted RustLight body.
 fn convert_function(
     signature: &syn::Signature,
     body: Block,
@@ -998,21 +999,12 @@ fn convert_local(local: &syn::Local) -> syn::Result<Statement> {
         });
     }
 
-    let (name, ifmut, ty) = match &local.pat {
+    let (pattern, ty) = match &local.pat {
         Pat::Type(typed) if typed.attrs.is_empty() => (
-            typed.pat.to_token_stream().to_string(),
-            false,
+            convert_binding_pattern(&typed.pat),
             Some(convert_type(&typed.ty)?),
         ),
-        Pat::Ident(PatIdent {
-            attrs,
-            ident,
-            by_ref: None,
-            mutability,
-            subpat: None,
-            ..
-        }) if attrs.is_empty() => (ident.to_string(), mutability.is_some(), None),
-        pat => (pat.to_token_stream().to_string(), false, None),
+        pat => (convert_binding_pattern(pat), None),
     };
 
     let init = match &local.init {
@@ -1022,8 +1014,7 @@ fn convert_local(local: &syn::Local) -> syn::Result<Statement> {
 
     Ok(Statement::Let(LetStmt {
         attrs,
-        ifmut,
-        name,
+        pattern,
         ty,
         init,
     }))
@@ -1334,15 +1325,22 @@ fn convert_expr(expr: &syn::Expr) -> syn::Result<Expr> {
     }
 }
 
+fn convert_binding_pattern(pattern: &Pat) -> crate::Pattern {
+    pattern::convert_pattern(pattern)
+        .unwrap_or_else(|_| crate::Pattern::Opaque(normalize_tokens(pattern.to_token_stream())))
+}
+
 fn convert_closure_param(pattern: &syn::Pat) -> syn::Result<ClosureParam> {
     match pattern {
-        syn::Pat::Type(typed) => Ok(ClosureParam::typed(
-            normalize_tokens(typed.pat.to_token_stream()),
+        syn::Pat::Type(typed) if typed.attrs.is_empty() => Ok(ClosureParam::typed(
+            convert_binding_pattern(&typed.pat),
             convert_type(&typed.ty)?,
         )),
-        other => Ok(ClosureParam::untyped(normalize_tokens(
-            other.to_token_stream(),
-        ))),
+        syn::Pat::Type(typed) => Err(syn::Error::new_spanned(
+            typed,
+            "unsupported attributes on typed closure parameter",
+        )),
+        other => Ok(ClosureParam::untyped(convert_binding_pattern(other))),
     }
 }
 

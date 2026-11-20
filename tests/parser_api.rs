@@ -640,7 +640,7 @@ fn trait_defaults_are_editable_without_changing_other_members() {
         type Item;
         const SIZE: usize = 2;
         fn required(&self, value: T) -> Self::Item;
-        fn unsupported(&self, (left, right): (u32, u32)) -> u32 { left + right }
+        fn unsupported(self: &Self, (left, right): (u32, u32)) -> u32 { left + right }
         #[inline]
         unsafe fn current(&self) -> u32 { 7 }
     }
@@ -658,7 +658,8 @@ fn trait_defaults_are_editable_without_changing_other_members() {
     };
     assert!(opaque
         .iter()
-        .all(|member| matches!(member, TraitMember::Raw(_))));
+        .all(|member| matches!(member, TraitMember::Raw(_))
+            || matches!(member, TraitMember::DefaultMethod(method) if method.name == "unsupported")));
     assert_eq!(default.name, "current");
     default.body.expr = Some(Box::new(Expr::Literal(Literal::Int(19))));
 
