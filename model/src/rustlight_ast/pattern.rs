@@ -70,12 +70,12 @@ impl From<Vec<String>> for PatternPath {
 
 impl Pattern {
     /// Create an ordinary identifier binding, or a wildcard for `_`.
-    pub(crate) fn binding(name: impl Into<String>) -> Self {
+    pub fn binding(name: impl Into<String>) -> Self {
         Self::binding_with_mode(name, BindingMode::Value)
     }
 
     /// Create an identifier binding with its written binding modifier.
-    pub(crate) fn binding_with_mode(name: impl Into<String>, mode: BindingMode) -> Self {
+    pub fn binding_with_mode(name: impl Into<String>, mode: BindingMode) -> Self {
         let name = name.into();
         if name == "_" && mode == BindingMode::Value {
             return Self::Wildcard;
@@ -87,8 +87,41 @@ impl Pattern {
         }
     }
 
+    /// The name of an identifier binding without an `@` subpattern.
+    pub fn binding_name(&self) -> Option<&str> {
+        match self {
+            Self::Ident {
+                name,
+                subpattern: None,
+                ..
+            } => Some(name),
+            _ => None,
+        }
+    }
 
+    /// The name of a plain identifier binding with no binding modifier.
+    pub fn plain_binding_name(&self) -> Option<&str> {
+        match self {
+            Self::Ident {
+                name,
+                mode: BindingMode::Value,
+                subpattern: None,
+            } => Some(name),
+            _ => None,
+        }
+    }
 
+    /// The name of a simple value binding, with or without `mut`.
+    pub fn value_binding_name(&self) -> Option<&str> {
+        match self {
+            Self::Ident {
+                name,
+                mode: BindingMode::Value | BindingMode::Mut,
+                subpattern: None,
+            } => Some(name),
+            _ => None,
+        }
+    }
 }
 
 /// The binding modifiers written on an identifier pattern.

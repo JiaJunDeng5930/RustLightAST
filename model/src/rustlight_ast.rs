@@ -321,10 +321,13 @@ impl ClosureParam {
         }
     }
 
-    pub(crate) fn binding(name: impl Into<String>) -> Self {
+    pub fn binding(name: impl Into<String>) -> Self {
         Self::untyped(Pattern::binding(name))
     }
 
+    pub fn typed_binding(name: impl Into<String>, ty: Type) -> Self {
+        Self::typed(Pattern::binding(name), ty)
+    }
 }
 
 impl From<&str> for ClosureParam {
@@ -484,6 +487,16 @@ pub enum Expr {
 pub struct MethodName {
     pub name: String,
     pub generic_arguments: Option<Vec<GenericArgument>>,
+}
+
+impl MethodName {
+    pub fn plain_name(&self) -> Option<&str> {
+        self.generic_arguments.is_none().then_some(self.name.as_str())
+    }
+
+    pub fn is_plain(&self, name: &str) -> bool {
+        self.plain_name() == Some(name)
+    }
 }
 
 impl From<String> for MethodName {
@@ -1040,7 +1053,8 @@ pub struct Param {
 
 impl Param {
     pub fn binding_name(&self) -> Option<&str> {
-        (!self.name.is_empty() && self.name != "_").then_some(self.name.as_str())
+        (self.pattern.is_none() && !self.name.is_empty() && self.name != "_")
+            .then_some(self.name.as_str())
     }
 }
 
