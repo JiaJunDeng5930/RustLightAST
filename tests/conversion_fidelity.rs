@@ -2,8 +2,8 @@ mod support;
 
 use rustlightast::rustlight_parser::{convert_file_preserving_items, parse_rust_source};
 use rustlightast::{
-    DataAttribute, Expr, Fields, GenericParam, Item, Pattern, RustCodeGenerator, RustModule,
-    Statement, Type, TypeAlias, TypeParameter, Visibility,
+    DataAttribute, Expr, Fields, GenericArgument, GenericParam, Item, Pattern, RustCodeGenerator,
+    RustModule, Statement, Type, TypeAlias, TypeParameter, Visibility,
 };
 
 fn parse_and_print(source: &str) -> (RustModule, String) {
@@ -129,7 +129,7 @@ match x0 {
         panic!("expected tuple variant");
     };
     assert!(matches!(&fields[0].ty, Type::Generic(name, args)
-        if name == "Box" && matches!(args.as_slice(), [Type::Named(name)] if name == "Num")));
+        if name == "Box" && matches!(args.as_slice(), [GenericArgument::Type(Type::Named(name))] if name == "Num")));
 
     let Some(Expr::Match { expr, arms }) = get.body.expr.as_deref() else {
         panic!("expected a modeled match");
@@ -243,6 +243,67 @@ fn values() -> (usize, usize) {
 }
 
 #[test]
+fn roundtrips_lifetime_type_and_const_arguments() {
+    let source = r#"
+pub struct Sample<'a, T, const N: i32> { value: &'a T }
+pub type Fixed<'a> = Sample<'a, u8, { 2 + 3 }>;
+
+impl<'a, T, const N: i32> Sample<'a, T, N> {
+    const WIDTH: i32 = N;
+}
+
+fn preserve<'a, const N: i32>(sample: Sample<'a, u8, N>) -> Sample<'a, u8, N> {
+    sample
+}
+
+fn width<T, const N: i32>() -> i32 {
+    Sample::<T, { N }>::WIDTH
+}
+
+pub fn run(value: &u8) -> (u8, i32, i32) {
+    let sample: Fixed<'_> = Sample::<'_, u8, { 2 + 3 }> { value };
+    let sample = preserve(sample);
+    (*sample.value, width::<u8, -2>(), <Sample<'_, u8, 7>>::WIDTH)
+}
+"#;
+    let (module, printed) = parse_and_print(source);
+    let Item::TypeAlias(alias) = &module.items[1] else {
+        panic!("expected type alias");
+    };
+    let Type::Generic(name, arguments) = &alias.target else {
+        panic!("expected generic type");
+    };
+    assert_eq!(name, "Sample");
+    assert!(matches!(
+        arguments.as_slice(),
+        [GenericArgument::Lifetime(lifetime), GenericArgument::Type(Type::Named(ty)), GenericArgument::Const(expression)]
+            if lifetime == "'a" && ty == "u8" && matches!(expression.as_ref(), Expr::Block(_))
+    ));
+
+    let Item::Function(preserve) = &module.items[3] else {
+        panic!("expected preserve function");
+    };
+    let Type::Generic(_, arguments) = &preserve.return_type else {
+        panic!("expected generic return type");
+    };
+    assert!(matches!(arguments[2].as_type(), Some(Type::Named(name)) if name == "N"));
+
+    let compact: String = printed.split_whitespace().collect();
+    for expected in [
+        "Sample<'a,u8,{2+3}>",
+        "Sample<'a,u8,N>",
+        "Sample::<T,{N}>::WIDTH",
+        "Sample::<'_,u8,{2+3}>",
+        "width::<u8,-2>()",
+        "<Sample<'_,u8,7>>::WIDTH",
+    ] {
+        assert!(compact.contains(expected), "{expected}: {printed}");
+    }
+    let (_, reprinted) = parse_and_print(&printed);
+    assert_eq!(printed, reprinted);
+}
+
+#[test]
 fn preserves_required_trait_methods_and_renamed_uses() {
     let source = r#"
 use num_traits::sign::Signed as _;
@@ -278,7 +339,7 @@ pub fn call_impl<A, B>(f: impl Fn(A) -> B, x: A) -> B {
         Item::Function(def) => match &def.params[0].ty {
             Type::Generic(name, params) => {
                 assert_eq!(name, "Rc");
-                assert!(matches!(&params[0], Type::CallableTrait(callable)
+                assert!(matches!(params[0].as_type(), Some(Type::CallableTrait(callable))
                     if callable.trait_path == ["Fn"]
                         && callable.args.len() == 1
                         && matches!(callable.return_type.as_ref(), Type::Named(name) if name == "B")));
@@ -321,7 +382,7 @@ pub fn make_pair(y: Int) -> (Rc<dyn Fn(Int) -> Int>, Int) {
         panic!("expected structured cast");
     };
     assert_eq!(name, "Rc");
-    assert!(matches!(&params[0], Type::CallableTrait(callable)
+    assert!(matches!(params[0].as_type(), Some(Type::CallableTrait(callable))
         if callable.trait_path == ["Fn"]
             && callable.args.len() == 1
             && matches!(callable.return_type.as_ref(), Type::Named(name) if name == "Int")));
@@ -352,7 +413,7 @@ fn prints_generic_type_alias_parameters_and_bounds() {
     let item = Item::TypeAlias(TypeAlias {
         attrs: vec![],
         name: "Callback".into(),
-        target: Type::Generic("Rc".into(), vec![Type::Named("T".into())]),
+        target: Type::Generic("Rc".into(), vec![Type::Named("T".into()).into()]),
         generics: vec![GenericParam::Type(TypeParameter {
             name: "T".into(),
             bounds: vec!["Clone".into()],
